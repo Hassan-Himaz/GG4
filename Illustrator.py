@@ -370,4 +370,96 @@ class Illustrator:
 
         return explained_variance, cumulative_variance
 
-    
+    def estimate_system_matrices(self, latent_dim: int = 2, n_iter: int = 10, control_function=None) -> dict:
+        """
+        Attempts to estimate the linear dynamical system matrices (A, C, Q, R, and B) 
+        from the observation data using Expectation-Maximization and State Regression.
+
+        Parameters
+        ----------
+        latent_dim : int
+            The assumed number of hidden state dimensions.
+        n_iter : int
+            The number of EM iterations to perform.
+        control_function : callable, optional
+            A function `f(time, data_history)` that returns the control input u_t.
+            Defaults to None (assumes zero input/no B matrix).
+
+        Returns
+        -------
+        dict
+            A dictionary containing the estimated matrices.
+        """
+        try:
+            from pykalman import KalmanFilter
+            from sklearn.linear_model import Ridge
+        except ImportError:
+            raise ImportError("Requires pykalman and scikit-learn. Run: pip install pykalman scikit-learn")
+
+        print(f"Estimating system matrices (Latent dimensions: {latent_dim})...")
+        
+        # 1. Run standard EM to find the latent geometry (C, Q, R) and smoothed states
+        flat_data = self.observation.reshape(-1, self.neuron_cnt)
+        kf = KalmanFilter(n_dim_state=latent_dim, n_dim_obs=self.neuron_cnt)
+        kf = kf.em(flat_data, n_iter=n_iter)
+        
+        # Extract the smoothed states for every trial
+        smoothed_states = np.zeros((self.trial_cnt, self.timestep_cnt, latent_dim))
+        for i in range(self.trial_cnt):
+            smoothed_states[i], _ = kf.smooth(self.observation[i])
+
+        A_est = kf.transition_matrices
+        B_est = None
+
+        # 2. If a control function is provided, use regression to find A and B simultaneously
+        if control_function is not None:
+            X_curr_list, X_next_list, U_list = [], [], []
+            
+            # Build the state and input histories
+            for trial in range(self.trial_cnt):
+                for t in range(self.timestep_cnt - 1):
+                    # Evaluate the control function at this timestep
+                    u_t = np.atleast_1d(control_function(t, self.observation[trial, :t+1]))
+                    
+                    X_curr_list.append(smoothed_states[trial, t])
+                    X_next_list.append(smoothed_states[trial, t+1])
+                    U_list.append(u_t)
+
+            X_curr = np.array(X_curr_list)
+            X_next = np.array(X_next_list)
+            U = np.array(U_list)
+
+            # Concatenate X_t and U_t into a single feature matrix
+            # Equation: X_{t+1} = [A, B] * [X_t ; U_t]
+            features = np.hstack((X_curr, U))
+            
+            # Fit a regularized regression to find the combined [A, B] matrix
+            model = Ridge(alpha=1.0, fit_intercept=False)
+            model.fit(features, X_next)
+            
+            # Split the learned coefficients back into A and B
+            A_est = model.coef_[:, :latent_dim]
+            B_est = model.coef_[:, latent_dim:]
+            print("Successfully regressed B matrix using provided control function!")
+
+        matrices = {
+            "A": A_est,
+            "C": kf.observation_matrices,
+            "B": B_est,
+            "Q": kf.transition_covariance,
+            "R": kf.observation_covariance
+        }
+        
+        print("Estimation complete.")
+        print("-" * 20)
+        print("A Matrix (Dynamics):\n", np.round(matrices["A"], 4))
+        print("\nC Matrix (Observation):\n", np.round(matrices["C"], 4))
+        if B_est is not None:
+            print("\nB Matrix (Control):\n", np.round(matrices["B"], 4))
+        else:
+            print("\nB Matrix (Control): None (No control function provided).")
+            
+        print("\nQ Matrix (Process Noise Diagonal):\n", np.round(np.diag(matrices["Q"]), 4))
+        print("\nR Matrix (Observation Noise Diagonal):\n", np.round(np.diag(matrices["R"]), 4))
+        
+        return matrices
