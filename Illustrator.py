@@ -80,8 +80,8 @@ class Illustrator:
         plt.title(f"All neuron signals in trial {trial_id}")
         plt.grid(alpha=0.3)
         plt.show()
-
-    def plot_neuron(self, neuron_id: int = 0):
+    
+    def plot_neuron(self, neuron_id: int = 0, function = lambda x: x):
         """
         Plot one selected neuron across all trials.
 
@@ -97,9 +97,12 @@ class Illustrator:
 
         plt.figure(figsize=(10, 5))
         for trial_id in range(self.trial_cnt):
+            values = self.observation[trial_id, :, neuron_id]
+            transformed_values = function(values)
+
             plt.plot(
                 time,
-                self.observation[trial_id, :, neuron_id],
+                transformed_values,
                 label=f"trial {trial_id}",
                 alpha=0.8,
             )
@@ -366,5 +369,5 @@ class Illustrator:
         plt.show()
 
         return explained_variance, cumulative_variance
-    
+
     
