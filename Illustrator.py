@@ -1,5 +1,10 @@
+from multiprocessing import Value
+
+from matplotlib.pylab import f
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.signal import savgol_filter
+
 
 
 class Illustrator:
@@ -19,8 +24,9 @@ class Illustrator:
         - Are different trials similar?
         - Which signals seem informative?
     """
-
-    __slots__ = ["observation", "trial_cnt", "timestep_cnt", "neuron_cnt"]
+    
+    #slots conflict with our properties so will omit for now
+    # __slots__ = ["observation", "trial_cnt", "timestep_cnt", "neuron_cnt"]
 
     def __init__(self, observation: np.ndarray):
         """
@@ -200,6 +206,55 @@ class Illustrator:
         plt.grid(alpha=0.3)
         plt.show()
 
+
+    def plot_neurons_single_trial(
+            self,
+            neuron_ids: list[int]|np.ndarray|int|None=None, 
+            trial_id: int = 0, 
+            function = lambda x: x):
+        '''
+        plot one or more neurons for a single trial
+        
+        parameters
+        ----------
+        neuron_ids: list[int]|np.ndarray|int|None
+            The neuron(s) to plot. Can be a single int, a list of ints, or None for all neurons.
+
+        trial_id: int
+            The trial to plot. Must be between 0 and trial_cnt - 1.
+        
+        
+        '''
+        if not 0 <= trial_id < self.trial_cnt:
+            raise ValueError(f"trial_id must be between 0 and {self.trial_cnt - 1}.")
+        
+        if isinstance(neuron_ids, list) or isinstance(neuron_ids, np.ndarray):
+            if max(neuron_ids)> self.neuron_cnt:
+                raise ValueError('One of the chosen neurons not in the dataset. Check indexing')
+            
+            filtered_neurons = self.observation[trial_id][:,neuron_ids] # get neural data for the desired neurons and trials
+            time = np.arange(self.timestep_cnt)
+            plt.figure(figsize=(10, 5))
+            for i, neuron_id in enumerate(neuron_ids):
+                
+                values = filtered_neurons[:, i]
+                transformed_values = function(values) # apply the transformation function to the values | default is identity function
+                plt.plot(
+                    time,
+                    transformed_values,
+                    label=f"neuron {neuron_id}",
+                    alpha=0.8,
+                )
+            plt.xlabel("Time step")
+            plt.ylabel("Observed activity")
+            plt.title(f"Neurons {neuron_ids} in trial {trial_id}")
+            plt.legend()
+            plt.grid(alpha=0.3)
+            plt.show()
+
+
+    
+
     def plot_trial_average(self):
         """
         Plot the average activity over trials for each neuron.
@@ -283,10 +338,12 @@ class Illustrator:
         """
         Compute useful summary statistics for each neuron/signal.
 
+        all stats are averaged over all trials
+
         Returns
         -------
         stats : dict
-            Dictionary containing mean, std, variance, peak value, and peak time
+            Dictionary containing mean, std, variance, peak value, peak time and peak slope
             for each neuron.
         """
         mean_per_neuron = np.mean(self.observation, axis=(0, 1))
@@ -297,6 +354,15 @@ class Illustrator:
         mean_timecourse = np.mean(self.observation, axis=0)  # shape: (time, neuron)
         peak_value = np.max(mean_timecourse, axis=0)
         peak_time = np.argmax(mean_timecourse, axis=0)
+        peak_slope = np.max(np.abs(savgol_filter(
+            mean_timecourse,
+            window_length=11,
+            polyorder=3,
+            deriv=1,
+            delta = 1.0,
+            axis =0,
+
+        )), axis=0)
 
         stats = {
             "mean": mean_per_neuron,
@@ -304,6 +370,7 @@ class Illustrator:
             "variance": var_per_neuron,
             "peak_value": peak_value,
             "peak_time": peak_time,
+            "peak_slope": peak_slope,
         }
 
         print("Neuron statistics")
@@ -315,7 +382,8 @@ class Illustrator:
                 f"std={std_per_neuron[neuron_id]:.3f}, "
                 f"var={var_per_neuron[neuron_id]:.3f}, "
                 f"peak={peak_value[neuron_id]:.3f}, "
-                f"peak_time={peak_time[neuron_id]}"
+                f"peak_time={peak_time[neuron_id]},"
+                f"peak_slope={peak_slope[neuron_id]:.3f}"
             )
 
         return stats
