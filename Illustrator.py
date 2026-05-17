@@ -1,5 +1,10 @@
+from multiprocessing import Value
+
+from matplotlib.pylab import f
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.signal import savgol_filter
+
 
 
 class Illustrator:
@@ -19,8 +24,9 @@ class Illustrator:
         - Are different trials similar?
         - Which signals seem informative?
     """
-
-    __slots__ = ["observation", "trial_cnt", "timestep_cnt", "neuron_cnt"]
+    
+    #slots conflict with our properties so will omit for now
+    # __slots__ = ["observation", "trial_cnt", "timestep_cnt", "neuron_cnt"]
 
     def __init__(self, observation: np.ndarray):
         """
@@ -97,11 +103,26 @@ class Illustrator:
         else:
             raise ValueError('Invalid data type') 
 
-    def get_covariance_matrix(self)->np.ndarray:
+    def get_covariance_matrix(
+            self,
+            trial : int| None = None,
+            )->np.ndarray:
         """Use this to calculate the covariance matrix accross the neurons
         A_{ij} = E[X_iX_j] - E[X_i]E[X_j] for X_i, X_j neurons
         This can be studied how the overall activity levels influence from one neuron to another
+
+        parameters
+        ----------
+        trial: int | None
+            If specified, calculates the covariance matrix for that specific trial.
+            If None, calculates the covariance matrix across all trials and timepoints.
+
         """
+        if trial is not None:
+            if not 0 <= trial < self.trial_cnt:
+                raise ValueError(f"trial must be between 0 and {self.trial_cnt - 1}.")
+            return np.cov(self.observation[trial], rowvar=False)
+        
         reshaped_observations = self.observation.reshape(self.trial_cnt*self.timestep_cnt, self.neuron_cnt)
         return np.cov(reshaped_observations,rowvar=False)
 
@@ -119,10 +140,95 @@ class Illustrator:
         """
         reshaped = self.observation.reshape(self.trial_cnt, self.timestep_cnt*self.neuron_cnt)
         return np.cov(reshaped)
-    
-    
 
 
+
+    def compare_cov_matrices(self, cov1: np.ndarray, cov2: np.ndarray)->float:
+        """
+        Use this to compare two covariance matrices
+
+        This will return correlation of flattened upper triangle of the covariance matrices (excluding the diagonal).
+
+        parameters
+        ------
+        cov1: np.ndarray        
+        cov2: np.ndarray
+
+        The covariance matrices to compare. Must have the same shape.
+    
+        """
+        if cov1.shape != cov2.shape:
+            raise ValueError("Covariance matrices must have the same shape for comparison.")
+        
+        # Flatten the upper triangle of the covariance matrices (excluding the diagonal)
+        triu_indices = np.triu_indices_from(cov1, k=1)
+        cov1_flat = cov1[triu_indices]
+        cov2_flat = cov2[triu_indices]
+
+        # Compute the correlation between the flattened covariance values
+        correlation = np.corrcoef(cov1_flat, cov2_flat)[0, 1]
+        
+        return correlation
+    
+
+    def get_full_cross_trial_cross_neuron_covariance_tensor(self) -> np.ndarray:
+        '''
+        Use this to get the full cross trial cross neuron covariance tensor
+        C[i,j,a,b] = Cov(X_{trial i, neuron a}, X_{trial j, neuron b})
+
+        for trial i and j and neurons a and b, this gives the covariance between the activity of neuron a in trial i and neuron b in trial j
+
+        this is the most in-depth way to understand the covariance structure of the data, but also the most computationally expensive.
+
+        
+        '''
+
+        data = self.observation
+        time_points = data.shape[1]
+        
+        # Center each (trial, neuron) time series
+        data_centered = data - data.mean(axis=1, keepdims=True)
+
+        #can use einsum to compute what would 4 nested for loops do in a more efficient way
+
+        # Contract over time: result[i,j,a,b] = sum_t Xc[i,t,a] * Xc[j,t,b]
+        cov_tensor = np.einsum('ita,jtb->ijab', data_centered, data_centered) / (time_points - 1)
+
+        return cov_tensor
+
+
+
+
+
+    def get_dissimilarity_matrix(self) -> np.ndarray:
+        '''
+        Use this to find the dissimilarity between trials
+
+        Should be able to detect potential mixed modes of trial behavior which may get washed out through the trial covariance matrix. 
+        (like cross trial cross neuron covariance tensor but more general)
+
+        we find the 16x16 covariance matrix for each trial then compare the similarity of these
+        covariance matrices across each possible pair of tr
+
+        
+        '''
+            # Compute each trial's covariance matrix once
+        per_trial_covs = [
+            self.get_covariance_matrix(trial=t) for t in range(self.trial_cnt)
+        ]
+        
+        dissimiarity_matrix = np.zeros((self.trial_cnt, self.trial_cnt))
+        for i in range(self.trial_cnt):
+            for j in range(i + 1, self.trial_cnt):
+                d = 1 - self.compare_cov_matrices(per_trial_covs[i], per_trial_covs[j])
+                dissimiarity_matrix[i, j] = d
+                dissimiarity_matrix[j, i] = d  # exploit symmetry
+        
+        return dissimiarity_matrix
+
+        
+                                          
+        
 
 
 
@@ -199,6 +305,55 @@ class Illustrator:
         plt.legend()
         plt.grid(alpha=0.3)
         plt.show()
+
+
+    def plot_neurons_single_trial(
+            self,
+            neuron_ids: list[int]|np.ndarray|int|None=None, 
+            trial_id: int = 0, 
+            function = lambda x: x):
+        '''
+        plot one or more neurons for a single trial
+        
+        parameters
+        ----------
+        neuron_ids: list[int]|np.ndarray|int|None
+            The neuron(s) to plot. Can be a single int, a list of ints, or None for all neurons.
+
+        trial_id: int
+            The trial to plot. Must be between 0 and trial_cnt - 1.
+        
+        
+        '''
+        if not 0 <= trial_id < self.trial_cnt:
+            raise ValueError(f"trial_id must be between 0 and {self.trial_cnt - 1}.")
+        
+        if isinstance(neuron_ids, list) or isinstance(neuron_ids, np.ndarray):
+            if max(neuron_ids)> self.neuron_cnt:
+                raise ValueError('One of the chosen neurons not in the dataset. Check indexing')
+            
+            filtered_neurons = self.observation[trial_id][:,neuron_ids] # get neural data for the desired neurons and trials
+            time = np.arange(self.timestep_cnt)
+            plt.figure(figsize=(10, 5))
+            for i, neuron_id in enumerate(neuron_ids):
+                
+                values = filtered_neurons[:, i]
+                transformed_values = function(values) # apply the transformation function to the values | default is identity function
+                plt.plot(
+                    time,
+                    transformed_values,
+                    label=f"neuron {neuron_id}",
+                    alpha=0.8,
+                )
+            plt.xlabel("Time step")
+            plt.ylabel("Observed activity")
+            plt.title(f"Neurons {neuron_ids} in trial {trial_id}")
+            plt.legend()
+            plt.grid(alpha=0.3)
+            plt.show()
+
+
+    
 
     def plot_trial_average(self):
         """
@@ -283,10 +438,12 @@ class Illustrator:
         """
         Compute useful summary statistics for each neuron/signal.
 
+        all stats are averaged over all trials
+
         Returns
         -------
         stats : dict
-            Dictionary containing mean, std, variance, peak value, and peak time
+            Dictionary containing mean, std, variance, peak value, peak time and peak slope
             for each neuron.
         """
         mean_per_neuron = np.mean(self.observation, axis=(0, 1))
@@ -298,12 +455,26 @@ class Illustrator:
         peak_value = np.max(mean_timecourse, axis=0)
         peak_time = np.argmax(mean_timecourse, axis=0)
 
+        # would maybe want to change for general savgol filter use 
+        #but would be less clean stats method, will leave for now
+
+        peak_slope = np.max(np.abs(savgol_filter(
+            mean_timecourse,
+            window_length=11,
+            polyorder=3,
+            deriv=1,
+            delta = 1.0,
+            axis =0,
+
+        )), axis=0)
+
         stats = {
             "mean": mean_per_neuron,
             "std": std_per_neuron,
             "variance": var_per_neuron,
             "peak_value": peak_value,
             "peak_time": peak_time,
+            "peak_slope": peak_slope,
         }
 
         print("Neuron statistics")
@@ -315,7 +486,8 @@ class Illustrator:
                 f"std={std_per_neuron[neuron_id]:.3f}, "
                 f"var={var_per_neuron[neuron_id]:.3f}, "
                 f"peak={peak_value[neuron_id]:.3f}, "
-                f"peak_time={peak_time[neuron_id]}"
+                f"peak_time={peak_time[neuron_id]},"
+                f"peak_slope={peak_slope[neuron_id]:.3f}"
             )
 
         return stats
