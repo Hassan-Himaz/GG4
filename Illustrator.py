@@ -103,7 +103,7 @@ class Illustrator:
         else:
             raise ValueError('Invalid data type') 
 
-    def get_covariance_matrix(
+    def get_inter_neuron_covariance_matrix(
             self,
             trial : int| None = None,
             )->np.ndarray:
@@ -140,7 +140,7 @@ class Illustrator:
         """
         reshaped = self.observation.reshape(self.trial_cnt, self.timestep_cnt*self.neuron_cnt)
         return np.cov(reshaped)
-
+    
 
 
     def compare_cov_matrices(self, cov1: np.ndarray, cov2: np.ndarray)->float:
@@ -214,7 +214,7 @@ class Illustrator:
         '''
             # Compute each trial's covariance matrix once
         per_trial_covs = [
-            self.get_covariance_matrix(trial=t) for t in range(self.trial_cnt)
+            self.get_inter_neuron_covariance_matrix(trial=t) for t in range(self.trial_cnt)
         ]
         
         dissimiarity_matrix = np.zeros((self.trial_cnt, self.trial_cnt))
@@ -226,12 +226,14 @@ class Illustrator:
         
         return dissimiarity_matrix
 
-        
-                                          
-        
-
-
-
+    def plot_matrix(self, matrix: np.ndarray):
+        plt.imshow(matrix, cmap='viridis', aspect='auto')
+        plt.colorbar(label='Value')
+        plt.title('Matrix Heatmap')
+        plt.xlabel('Column')
+        plt.ylabel('Row')
+        plt.show()
+                                        
 
 
     def summary(self):
