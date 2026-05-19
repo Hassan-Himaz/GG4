@@ -2,6 +2,7 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.linalg as la
+from scipy.signal import savgol_filter
 
 
 class Illustrator:
@@ -70,6 +71,8 @@ class Illustrator:
         A simple function to call all the plotting and statistics methods in one go.
 
         This is useful for quickly getting a comprehensive overview of the dataset.
+
+        useful for demonstrating all the abilities of the illustrator class
         """
         self.summary()
         self.neuron_statistics()
@@ -124,7 +127,10 @@ class Illustrator:
         else:
             raise ValueError('Invalid data type') 
 
-    def get_covariance_matrix(self)->np.ndarray:
+    def get_inter_neuron_covariance_matrix(
+            self,
+            trial : int| None = None,
+            )->np.ndarray:
         """Use this to calculate the covariance matrix accross the neurons
         A_{ij} = E[X_iX_j] - E[X_i]E[X_j] for X_i, X_j neurons
         This can be studied how the overall activity levels influence from one neuron to another
@@ -148,6 +154,35 @@ class Illustrator:
         return np.cov(reshaped)
     
 
+
+    def compare_cov_matrices(self, cov1: np.ndarray, cov2: np.ndarray)->float:
+        """
+        Use this to compare two covariance matrices
+
+        This will return correlation of flattened upper triangle of the covariance matrices (excluding the diagonal).
+
+        parameters
+        ------
+        cov1: np.ndarray        
+        cov2: np.ndarray
+
+        The covariance matrices to compare. Must have the same shape.
+    
+        """
+        if cov1.shape != cov2.shape:
+            raise ValueError("Covariance matrices must have the same shape for comparison.")
+        
+        # Flatten the upper triangle of the covariance matrices (excluding the diagonal)
+        triu_indices = np.triu_indices_from(cov1, k=1)
+        cov1_flat = cov1[triu_indices]
+        cov2_flat = cov2[triu_indices]
+
+        # Compute the correlation between the flattened covariance values
+        correlation = np.corrcoef(cov1_flat, cov2_flat)[0, 1]
+        
+        return correlation
+    
+
     def get_PSD(
             self,
             neuron_list: np.ndarray,
@@ -168,8 +203,6 @@ class Illustrator:
 
         #of the trials selected we are going to concantenate the data
 
-
-
         psd_results = {}
         for neuron in neuron_list:
             psd_results[neuron] = []
@@ -182,9 +215,40 @@ class Illustrator:
 
     def empirical_observability_gramian(self):
 
-    
+        pass
 
         
+  
+
+
+
+
+    def get_dissimilarity_matrix(self) -> np.ndarray:
+        '''
+        Use this to find the dissimilarity between trials
+
+        Should be able to detect potential mixed modes of trial behavior which may get washed out through the trial covariance matrix. 
+        (like cross trial cross neuron covariance tensor but more general)
+
+        we find the 16x16 covariance matrix for each trial then compare the similarity of these
+        covariance matrices across each possible pair of tr
+
+        
+        '''
+            # Compute each trial's covariance matrix once
+        per_trial_covs = [
+            self.get_inter_neuron_covariance_matrix(trial=t) for t in range(self.trial_cnt)
+        ]
+        
+        dissimiarity_matrix = np.zeros((self.trial_cnt, self.trial_cnt))
+        for i in range(self.trial_cnt):
+            for j in range(i + 1, self.trial_cnt):
+                d = 1 - self.compare_cov_matrices(per_trial_covs[i], per_trial_covs[j])
+                dissimiarity_matrix[i, j] = d
+                dissimiarity_matrix[j, i] = d  # exploit symmetry
+        
+        return dissimiarity_matrix
+                                        
 
 
     def summary(self):
@@ -220,12 +284,24 @@ class Illustrator:
         peak_value = np.max(mean_timecourse, axis=0)
         peak_time = np.argmax(mean_timecourse, axis=0)
 
+        # Peak slope: smooth + differentiate, then take max magnitude per neuron
+        slopes = savgol_filter(
+            mean_timecourse,
+            window_length=5,
+            polyorder=2,
+            deriv=1,
+            delta=1.0,
+            axis=0,                      # IMPORTANT: differentiate along time
+        )
+        peak_slope = np.max(np.abs(slopes), axis=0)
+
         stats = {
             "mean": mean_per_neuron,
             "std": std_per_neuron,
             "variance": var_per_neuron,
             "peak_value": peak_value,
             "peak_time": peak_time,
+            "peak slope": peak_slope,
         }
 
         print("Neuron statistics")
@@ -238,6 +314,7 @@ class Illustrator:
                 f"var={var_per_neuron[neuron_id]:.3f}, "
                 f"peak={peak_value[neuron_id]:.3f}, "
                 f"peak_time={peak_time[neuron_id]}"
+                f"peak_slope = {peak_slope[neuron_id]}"
             )
 
         return stats
@@ -560,6 +637,60 @@ class Illustrator:
 
  
     #--------------------------------------------------------------------
+    #matrix visualisation
+
+    def plot_matrix(self, matrix: np.ndarray, title: str = "Matrix Plot", 
+                    color_coded: bool = True, show_numbers: bool = False, cmap: str = 'bwr'):
+        """
+        Displays a 2D matrix layout cleanly with synchronized grid markers.
+        
+        Parameters
+        ----------
+        matrix : np.ndarray
+            The 2D matrix array to visualize.
+        title : str
+            The title header appended to the plot window.
+        color_coded : bool
+            If True, colors the pixels using a color map. If False, prints a grayscale layout.
+        show_numbers : bool
+            If True, overlays the actual numeric values inside each matrix cell.
+        cmap : str
+            Matplotlib colormap profile string (e.g., 'bwr', 'coolwarm', 'viridis').
+        """
+        fig, ax = plt.subplots(figsize=(7, 5.5))
+        
+        if color_coded:
+            # Anchor maximum color ranges symmetrically around 0 for diverging maps
+            vmax = np.max(np.abs(matrix))
+            vmax = vmax if vmax > 0 else 1.0
+            vmin = -vmax if cmap in ['bwr', 'seismic', 'coolwarm'] else np.min(matrix)
+            
+            heatmap = ax.imshow(matrix, cmap=cmap, vmin=vmin, vmax=vmax, aspect='auto')
+            plt.colorbar(heatmap, label='Coefficient Intensity Value')
+        else:
+            heatmap = ax.imshow(matrix, cmap='gray', aspect='auto')
+            plt.colorbar(heatmap, label='Value Scale')
+
+        # Map dynamic tick marks for rows and columns
+        ax.set_xticks(np.arange(matrix.shape[1]))
+        ax.set_yticks(np.arange(matrix.shape[0]))
+        
+        return matrices
+    
+
+
+    
+
+
+    #-------------------------------------------------------------------
+
+    #hankel matrix method
+
+
+    
+    #--------------------------------------------------------------------
+
+
     #matrix visualisation
 
     def plot_matrix(self, matrix: np.ndarray, title: str = "Matrix Plot", 
