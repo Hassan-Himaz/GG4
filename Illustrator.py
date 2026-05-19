@@ -77,7 +77,7 @@ class Illustrator:
         self.summary()
         self.neuron_statistics()
         self.trial_variability_report()
-        self.plot_scatter()
+        self.plot_general()
         self.plot_trial_average()
         self.plot_population_average()
         self.plot_heatmap()
@@ -367,7 +367,7 @@ class Illustrator:
 
     #refactored the plotting trials/neurons into a more general scatter plot function
 
-    def plot_scatter(
+    def plot_general(
             self,
             neuron_list: np.ndarray|None = None,
             time_list: np.ndarray|None = None,
@@ -398,7 +398,7 @@ class Illustrator:
             if (neuron_list is not None) and (trial_list is not None) and (time_list is not None):
                 for trial in trial_list:
                     for neuron in neuron_list:
-                        plt.scatter(time_list, self.observation[trial, time_list, neuron], label=f"Trial {trial}, Neuron {neuron}", alpha=0.6)
+                        plt.plot(time_list, self.observation[trial, time_list, neuron], label=f"Trial {trial}, Neuron {neuron}", alpha=0.6)
             else:
                 raise ValueError("At least one of neuron_list, time_list, or trial_list must be provided.")
 
