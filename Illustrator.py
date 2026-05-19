@@ -20,7 +20,7 @@ class Illustrator:
         - Which signals seem informative?
     """
 
-    __slots__ = ["observation", "trial_cnt", "timestep_cnt", "neuron_cnt"]
+    #__slots__ = ["observation", "trial_cnt", "timestep_cnt", "neuron_cnt"]
 
     def __init__(self, observation: np.ndarray):
         """
@@ -120,11 +120,6 @@ class Illustrator:
         reshaped = self.observation.reshape(self.trial_cnt, self.timestep_cnt*self.neuron_cnt)
         return np.cov(reshaped)
     
-    
-
-
-
-
 
 
 
