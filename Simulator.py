@@ -1,4 +1,5 @@
 #can improve performance in number of ways if required 
+#add controlability and observability things
 import numpy as np
 rng = np.random.default_rng()
 class Simulator:

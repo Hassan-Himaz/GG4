@@ -394,3 +394,150 @@ class Illustrator:
         
         plt.tight_layout()
         plt.show()
+
+    # =====================================================================
+    # INPUT GENERATION UTILITIES (Static Methods)
+    # =====================================================================
+    
+    @staticmethod
+    def generate_impulse(length: int, trigger_time: int, input_dim: int = 1) -> np.ndarray:
+        """Generates a unit impulse (a single spike) at a specific time."""
+        u = np.zeros((length, input_dim))
+        if 0 <= trigger_time < length:
+            u[trigger_time, :] = 1.0
+        return u
+
+    @staticmethod
+    def generate_pulse(length: int, start_time: int, end_time: int, input_dim: int = 1) -> np.ndarray:
+        """Generates a sustained square pulse between a start and end time."""
+        u = np.zeros((length, input_dim))
+        start = max(0, start_time)
+        end = min(length, end_time)
+        u[start:end, :] = 1.0
+        return u
+
+    # =====================================================================
+    # THE FITTING ENGINE
+    # =====================================================================
+
+    def fit_abc_matrices(self, U: np.ndarray, state_dim: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Fits the A, B, and C matrices for a linear state-space system driven by input U.
+        Extracts the observation data directly from self.observation.
+        
+        Parameters:
+            U (np.ndarray): The known input sequence applied to the system. 
+                            Shape (Trials, Timesteps, Input_Dims)
+            state_dim (int): The number of hidden states (n).
+            
+        Returns:
+            A (np.ndarray): State transition matrix (state_dim x state_dim)
+            B (np.ndarray): Input control matrix (state_dim x Input_Dims)
+            C (np.ndarray): Observation matrix (Neurons x state_dim)
+            seed (np.ndarray): The initial state vector X(0) to replicate the data.
+        """
+        # Validate input dimensions match the stored observations
+        if U.shape[0] != self.trial_cnt or U.shape[1] != self.timestep_cnt:
+            raise ValueError(f"Input U shape {U.shape[:2]} does not match observation "
+                             f"trials/timesteps {(self.trial_cnt, self.timestep_cnt)}.")
+            
+        input_dim = U.shape[2]
+        
+        # 1. Isolate the State Subspace (X) and Observation Mapping (C) via SVD
+        # We flatten across trials and time to capture spatial variance
+        Y_flat = self.observation.reshape(-1, self.neuron_cnt)
+        
+        # Perform SVD: Y = U_svd * Sigma * V^T
+        U_svd, Sigma, Vt = np.linalg.svd(Y_flat, full_matrices=False)
+        
+        # Truncate to the requested state dimension
+        C = Vt[:state_dim, :].T  # Shape: (Neurons, state_dim)
+        
+        # The hidden state trajectory is the remaining SVD components scaled by variance
+        X_flat = U_svd[:, :state_dim] @ np.diag(Sigma[:state_dim])
+        
+        # Reshape X back to 3D so we can safely extract t and t+1 WITHOUT crossing trial boundaries
+        X = X_flat.reshape(self.trial_cnt, self.timestep_cnt, state_dim)
+        
+        # 2. Prepare time-shifted arrays for Least Squares Regression
+        # We want to solve: X(t+1) = A * X(t) + B * U(t)
+        X_t = X[:, :-1, :].reshape(-1, state_dim)
+        X_next = X[:, 1:, :].reshape(-1, state_dim)
+        U_t = U[:, :-1, :].reshape(-1, input_dim)
+        
+        # Concatenate X_t and U_t horizontally to solve for A and B simultaneously
+        # Equation becomes: X_next = [X_t, U_t] * [A^T, B^T]^T
+        Z = np.hstack((X_t, U_t))
+        
+        # Solve Ordinary Least Squares (OLS)
+        # W contains both A^T and B^T stacked vertically
+        W, _, _, _ = np.linalg.lstsq(Z, X_next, rcond=None)
+        
+        # Extract and transpose back to standard control orientation
+        A = W[:state_dim, :].T  # Shape: (state_dim, state_dim)
+        B = W[state_dim:, :].T  # Shape: (state_dim, Input_Dim)
+        
+        # 3. Extract the Seed (Initial State)
+        # Average the starting state X(0) across all trials to get a clean replication seed
+        seed = np.mean(X[:, 0, :], axis=0)
+        
+        return A, B, C, seed
+    def fit_full_system(self, U: np.ndarray, state_dim: int) -> tuple:
+        """
+        Fits the complete linear state-space system (A, B, C) and 
+        estimates the noise covariance matrices (Q, R).
+        
+        Returns:
+            A, B, C, Q, R, seed
+        """
+        # Validate dimensions
+        if U.shape[0] != self.trial_cnt or U.shape[1] != self.timestep_cnt:
+            raise ValueError(f"Input U shape {U.shape[:2]} does not match observation "
+                             f"trials/timesteps {(self.trial_cnt, self.timestep_cnt)}.")
+            
+        input_dim = U.shape[2]
+        
+        # 1. Isolate the State Subspace (X) and Observation Mapping (C) via SVD
+        Y_flat = self.observation.reshape(-1, self.neuron_cnt)
+        U_svd, Sigma, Vt = np.linalg.svd(Y_flat, full_matrices=False)
+        
+        C = Vt[:state_dim, :].T  # Shape: (Neurons, state_dim)
+        X_flat = U_svd[:, :state_dim] @ np.diag(Sigma[:state_dim])
+        X = X_flat.reshape(self.trial_cnt, self.timestep_cnt, state_dim)
+        
+        # 2. Least Squares Regression for A and B
+        X_t = X[:, :-1, :].reshape(-1, state_dim)
+        X_next = X[:, 1:, :].reshape(-1, state_dim)
+        U_t = U[:, :-1, :].reshape(-1, input_dim)
+        
+        Z = np.hstack((X_t, U_t))
+        W, _, _, _ = np.linalg.lstsq(Z, X_next, rcond=None)
+        
+        A = W[:state_dim, :].T
+        B = W[state_dim:, :].T
+        
+        # ==========================================================
+        # 3. NOISE COVARIANCE ESTIMATION (Q and R)
+        # ==========================================================
+        
+        # Calculate Observation Residuals v(t) for R
+        # Y_pred = X * C^T. We use X_flat to compute over all time/trials instantly.
+        Y_pred = X_flat @ C.T
+        V_residuals = Y_flat - Y_pred
+        
+        # R is the covariance of the observation errors (Neurons x Neurons)
+        # rowvar=False because our features (neurons) are in columns
+        R = np.cov(V_residuals, rowvar=False)
+        
+        # Calculate Process Residuals w(t) for Q
+        # X_next_pred = A*X(t) + B*U(t). Note: Using transposes for aligned batch matrix math.
+        X_next_pred = (X_t @ A.T) + (U_t @ B.T)
+        W_residuals = X_next - X_next_pred
+        
+        # Q is the covariance of the process errors (State_Dim x State_Dim)
+        Q = np.cov(W_residuals, rowvar=False)
+
+        # 4. Extract Seed
+        seed = np.mean(X[:, 0, :], axis=0)
+        
+        return A, B, C, Q, R, seed
