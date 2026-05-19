@@ -180,7 +180,7 @@ class Illustrator:
              
         return psd_results
 
-    #def empirical_observability_gramian(self):
+    def empirical_observability_gramian(self):
 
     
 
