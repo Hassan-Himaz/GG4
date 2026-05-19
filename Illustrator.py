@@ -723,3 +723,281 @@ class Illustrator:
         print("\nR Matrix (Observation Noise Diagonal):\n", np.round(np.diag(matrices["R"]), 4))
         
         return matrices
+    
+
+
+    ###------------------------------------------------------------------------------------------------
+
+    #Vector autoregression estimation method
+    
+
+    def estimate_var_matrix(self, lag: int = 1) -> np.ndarray:
+        """
+        Estimates the Vector Autoregressive (VAR) transition matrix W for a given time lag.
+        
+        Solves for W in: X(t + lag) = W * X(t) + noise
+        Formula used: W = C_lag * inv(C_0)
+        
+        Parameters
+        ----------
+        lag : int
+            The number of steps ahead the transition rules map.
+            
+        Returns
+        -------
+        np.ndarray
+            The estimated (Neurons x Neurons) structural transition weight matrix.
+        """
+        # 1. Fetch shifted time slices
+        x_t_flat, x_lag_flat = self._slice_and_flatten(lag)
+        
+        # 2. Mean-center signals to strip global population offset/biases
+        x_t_centered = x_t_flat - np.mean(x_t_flat, axis=0)
+        x_lag_centered = x_lag_flat - np.mean(x_lag_flat, axis=0)
+        num_samples = x_t_flat.shape[0]
+        
+        # 3. Calculate internal contemporaneous covariance (C_0) and lag covariance (C_lag)
+        c_0 = np.dot(x_t_centered.T, x_t_centered) / num_samples
+        c_lag = np.dot(x_t_centered.T, x_lag_centered) / num_samples
+        
+        # Add a tiny ridge regression penalty to the diagonal to ensure stability during inversion
+        c_0 += np.eye(self.neuron_cnt) * 1e-6
+        
+        # 4. Clear spatial confounders out: W^T = inv(C_0) * C_lag -> W = C_lag^T * inv(C_0)^T
+        # Transpose adjustment matches row/column orientation standard to dynamical modeling
+        transition_matrix = np.linalg.solve(c_0, c_lag).T
+        
+        return transition_matrix
+    
+
+
+    #-------------------------------------------------------------------
+
+    #hankel matrix method
+
+
+    def estimate_ssid_matrices(self, state_dim: int, horizon: int = 4) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Estimates the hidden system matrix A and observation matrix C 
+        using Subspace System Identification (SSID).
+        
+        Parameters
+        ----------
+        state_dim : int
+            The desired dimension of the hidden state subspace (n).
+            Must be less than or equal to (neuron_cnt * horizon).
+        horizon : int
+            The number of time steps to look into the past/future to build 
+            the Hankel prediction matrix. Higher captures slower dynamics.
+            
+        Returns
+        -------
+        A : np.ndarray (state_dim x state_dim)
+            The hidden state transition matrix.
+        C : np.ndarray (neuron_cnt x state_dim)
+            The observation mapping matrix.
+        """
+
+        # Ensure we are working with mean-centered data across trials
+        # Data shape: (Trials * Timepoints, Neurons)
+        total_timepoints = self.trial_cnt * self.timestep_cnt
+        y_flat = self.observation.reshape(total_timepoints, self.neuron_cnt)
+        y_centered = y_flat - np.mean(y_flat, axis=0)
+        
+        # 1. Construct the Block Hankel Matrix
+        # We need enough continuous time points per trial. For simplicity, we assume
+        # data continuity or perform it per trial. Here we treat the flattened array 
+        # as a continuous stream for structural simplicity.
+        N = total_timepoints - 2 * horizon + 1
+        if N <= 0:
+            raise ValueError("Data is too short for the requested horizon size.")
+            
+        # Build past and future Hankel structures
+        H = np.zeros((2 * horizon * self.neuron_cnt, N))
+        for i in range(2 * horizon):
+            H[i * self.neuron_cnt : (i + 1) * self.neuron_cnt, :] = y_centered[i : i + N, :].T
+            
+        Y_p = H[: horizon * self.neuron_cnt, :]  # Past observations
+        Y_f = H[horizon * self.neuron_cnt :, :]  # Future observations
+
+        # 2. Project Future onto Past (Geometric Projection)
+        # This captures the subspace shared between past and future
+        # Projection = Y_f * Y_p^T * inv(Y_p * Y_p^T) * Y_p
+        R_ff = np.dot(Y_f, Y_p.T)
+        R_pp = np.dot(Y_p, Y_p.T) + np.eye(Y_p.shape[0]) * 1e-6 # Ridge stability
+        projection = np.dot(R_ff, la.solve(R_pp, Y_p))
+
+        # 3. Singular Value Decomposition (SVD) to isolate the State Subspace
+        U, Sigma, Vt = la.svd(projection, full_matrices=False)
+        
+        # Truncate to the chosen hidden state dimension
+        U_n = U[:, :state_dim]
+        Sigma_n = np.diag(Sigma[:state_dim])
+        Vt_n = Vt[:state_dim, :]
+
+        # 4. Extract the Hidden State Sequences
+        # The extended observability matrix O_i and estimated states X
+        O_i = np.dot(U_n, la.sqrtm(Sigma_n))
+        X = np.dot(la.sqrtm(Sigma_n), Vt_n)
+        
+        # Shifted state sequences for regression: X(t) and X(t+1)
+        X_t = X[:, :-1]
+        X_t_plus_1 = X[:, 1:]
+
+        # 5. Compute System Matrices (A and C) via Ordinary Least Squares
+        # X(t+1) = A * X(t) -> A = X(t+1) * X(t)^T * inv(X(t) * X(t)^T)
+        A = np.dot(X_t_plus_1, X_t.T) @ la.inv(np.dot(X_t, X_t.T) + np.eye(state_dim) * 1e-6)
+        
+        # C is extracted from the top block of the Observability Matrix O_i
+        C = O_i[: self.neuron_cnt, :]
+
+        return A, C
+    
+
+    #--------------------------------------------------------------------
+
+
+    #matrix visualisation
+
+    def plot_matrix(self, matrix: np.ndarray, title: str = "Matrix Plot", 
+                    color_coded: bool = True, show_numbers: bool = False, cmap: str = 'bwr'):
+        """
+        Displays a 2D matrix layout cleanly with synchronized grid markers.
+        
+        Parameters
+        ----------
+        matrix : np.ndarray
+            The 2D matrix array to visualize.
+        title : str
+            The title header appended to the plot window.
+        color_coded : bool
+            If True, colors the pixels using a color map. If False, prints a grayscale layout.
+        show_numbers : bool
+            If True, overlays the actual numeric values inside each matrix cell.
+        cmap : str
+            Matplotlib colormap profile string (e.g., 'bwr', 'coolwarm', 'viridis').
+        """
+        fig, ax = plt.subplots(figsize=(7, 5.5))
+        
+        if color_coded:
+            # Anchor maximum color ranges symmetrically around 0 for diverging maps
+            vmax = np.max(np.abs(matrix))
+            vmax = vmax if vmax > 0 else 1.0
+            vmin = -vmax if cmap in ['bwr', 'seismic', 'coolwarm'] else np.min(matrix)
+            
+            heatmap = ax.imshow(matrix, cmap=cmap, vmin=vmin, vmax=vmax, aspect='auto')
+            plt.colorbar(heatmap, label='Coefficient Intensity Value')
+        else:
+            heatmap = ax.imshow(matrix, cmap='gray', aspect='auto')
+            plt.colorbar(heatmap, label='Value Scale')
+
+        # Map dynamic tick marks for rows and columns
+        ax.set_xticks(np.arange(matrix.shape[1]))
+        ax.set_yticks(np.arange(matrix.shape[0]))
+        
+        # Overlay the actual numbers if toggled on
+        if show_numbers:
+            # Get the current colormap to evaluate background brightness
+            current_cmap = plt.get_cmap(cmap if color_coded else 'gray')
+            norm = heatmap.norm
+            
+            for i in range(matrix.shape[0]):
+                for j in range(matrix.shape[1]):
+                    val = matrix[i, j]
+                    
+                    # Determine cell background color to adjust text contrast dynamically
+                    cell_color = current_cmap(norm(val))
+                    # Compute relative luminance (standard formula for text legibility)
+                    luminance = 0.299 * cell_color[0] + 0.587 * cell_color[1] + 0.114 * cell_color[2]
+                    text_color = "black" if luminance > 0.5 else "white"
+                    
+                    # Place text cleanly centered in the cell (formatted to 2 decimal places)
+                    ax.text(j, i, f"{val:.2f}", ha="center", va="center", 
+                            color=text_color, fontweight='bold', fontsize=9)
+
+        ax.set_title(title, fontsize=12, pad=12)
+        ax.set_xlabel("Columns (Destination / Output Index)")
+        ax.set_ylabel("Rows (Source / Input Index)")
+        
+        plt.grid(False) # Prevent gridlines from crossing inside pixels
+        plt.tight_layout()
+        plt.show()
+
+    # --------------------------------------------------------------------
+    #scree plot
+        
+    def plot_scree(self, horizon: int = 4):
+        """
+        Computes and plots a Scree Plot of the singular values from the 
+        SSID projection matrix. This visualizes the 'energy' of each dimension
+        to help determine the optimal hidden state_dim (the "elbow" method).
+        
+        Parameters
+        ----------
+        horizon : int
+            The number of time steps used for the past/future data blocks.
+            Should match the horizon you intend to use in estimate_ssid_matrices.
+        """
+        # 1. Flatten and center data
+        total_timepoints = self.trial_cnt * self.timestep_cnt
+        y_flat = self.observation.reshape(total_timepoints, self.neuron_cnt)
+        y_centered = y_flat - np.mean(y_flat, axis=0)
+        
+        N = total_timepoints - 2 * horizon + 1
+        if N <= 0:
+            raise ValueError("Observation timeline is too short for this horizon.")
+            
+        # 2. Reconstruct the block Hankel rows
+        H = np.zeros((2 * horizon * self.neuron_cnt, N))
+        for i in range(2 * horizon):
+            H[i * self.neuron_cnt : (i + 1) * self.neuron_cnt, :] = y_centered[i : i + N, :].T
+            
+        Y_p = H[: horizon * self.neuron_cnt, :]
+        Y_f = H[horizon * self.grid_cols if hasattr(self, 'grid_cols') else horizon * self.neuron_cnt :, :]
+
+        # 3. Geometric Projection
+        R_ff = np.dot(Y_f, Y_p.T)
+        R_pp = np.dot(Y_p, Y_p.T) + np.eye(Y_p.shape[0]) * 1e-6
+        projection = np.dot(R_ff, la.solve(R_pp, Y_p))
+
+        # 4. Extract Singular Values (No truncation here, we want to see all of them)
+        _, Sigma, _ = la.svd(projection, full_matrices=False)
+        
+        # Calculate variance metrics for plotting
+        variance_explained = (Sigma**2) / np.sum(Sigma**2) * 100
+        cumulative_variance = np.cumsum(variance_explained)
+        num_components = len(Sigma)
+        x_ticks = np.arange(1, num_components + 1)
+
+        # 5. Plotting a dual-axis Scree/Manifold chart
+        fig, ax1 = plt.subplots(figsize=(9, 5))
+
+        # Left Axis: Individual Singular Values
+        color = 'tab:blue'
+        ax1.set_xlabel('Component / Subspace Dimension Index', fontweight='bold')
+        ax1.set_ylabel('Singular Value Magnitude', color=color, fontweight='bold')
+        line1 = ax1.plot(x_ticks, Sigma, 'o-', color=color, linewidth=2, label='Singular Value')
+        ax1.tick_params(axis='y', labelcolor=color)
+        ax1.set_xticks(x_ticks)
+        ax1.grid(True, alpha=0.3)
+
+        # Right Axis: Cumulative Explained Variance
+        ax2 = ax1.twinx()  
+        color = 'tab:orange'
+        ax2.set_ylabel('Cumulative Variance Explained (%)', color=color, fontweight='bold')
+        line2 = ax2.plot(x_ticks, cumulative_variance, 's--', color=color, alpha=0.7, label='Cumulative Variance')
+        ax2.tick_params(axis='y', labelcolor=color)
+        ax2.set_ylim(0, 105)
+
+        # Dynamic annotations to guide selection
+        plt.title('SSID Subspace Scree Plot\n(Look for the "Elbow" where Singular Values flatten out)', fontsize=12, pad=15)
+        
+        # Add a unified legend for both axes lines
+        lines = line1 + line2
+        labels = [l.get_label() for l in lines]
+        ax1.legend(lines, labels, loc='center right')
+        
+        plt.tight_layout()
+        plt.show()
+    
+
