@@ -1,5 +1,6 @@
-#can improve performance in number of ways if required 
+from Illustrator import Illustrator
 import numpy as np
+import scipy.linalg as la
 rng = np.random.default_rng()
 
 class Simulator:
@@ -9,7 +10,7 @@ class Simulator:
     Initialise with list or matrix parameters: A,B,C,Q,R
     """
 
-    def __init__(self,parameters: np.ndarray):
+    def __init__(self,parameters: np.ndarray,illustrator: Illustrator):
         """
         Initialize the Model with set Parameters
         Accepts a 3D numpy array of shape (A,B,C,Q,R) and stores it for data generation
@@ -19,6 +20,11 @@ class Simulator:
         self.A, self.B, self.C, self.Q, self.R = map(np.array, parameters)
         self.x_dimensions = len(self.Q)
         self.y_dimensions = len(self.R)
+        self.illustrator = illustrator
+        self.trial_cnt = self.illustrator.trial_cnt
+        self.timestep_cnt = self.illustrator.timestep_cnt
+        self.neuron_cnt = self.illustrator.neuron_cnt
+        self.observation = self.illustrator.observation
 
 
 
@@ -253,7 +259,7 @@ class Simulator:
 
     
 
-    def generate_data(self, trials: int, lengths: int, seed: np.array, control_function: callable):
+    def generate_data(self, trials: int, lengths: int, seed: np.ndarray, control_function: callable):
         '''Generates the data, given set number of trials, lenghts of times, seed for x, and a provided control function'''
         dataset = []
         for trial in range(trials):
@@ -270,6 +276,11 @@ class Simulator:
             data.append(observed_state)
         return np.array(data)
     
+
+
+
+
+
 #Example usage
 def step_controller(time,
                     output,
@@ -291,51 +302,54 @@ def sinusoidal_controller(time, states):
     ])
 
 
-dt = 0.1
+# dt = 0.1
+# illustrator = Illustrator(np.load("ExampleDataset.npy"))
 
-sim = Simulator([
+# sim = Simulator([
 
-    # A : dynamics matrix
-    [
-        [1, 0, dt, 0],
-        [0, 1, 0, dt],
-        [0, 0, 0.98, 0],
-        [0, 0, 0, 0.98]
-    ],
+#     # A : dynamics matrix
+#     [
+#         [1, 0, dt, 0],
+#         [0, 1, 0, dt],
+#         [0, 0, 0.98, 0],
+#         [0, 0, 0, 0.98]
+#     ],
 
-    # B : control matrix
-    [
-        [0, 0],
-        [0, 0],
-        [1, 0],
-        [0, 1]
-    ],
+#     # B : control matrix
+#     [
+#         [0, 0],
+#         [0, 0],
+#         [1, 0],
+#         [0, 1]
+#     ],
 
-    # C : observation matrix
-    [
-        [1, 0, 0, 0],
-        [0, 1, 0, 0]
-    ],
+#     # C : observation matrix
+#     [
+#         [1, 0, 0, 0],
+#         [0, 1, 0, 0]
+#     ],
 
-    # Q : process covariance
-    [
-        [0.01, 0, 0, 0],
-        [0, 0.01, 0, 0],
-        [0, 0, 0.05, 0],
-        [0, 0, 0, 0.05]
-    ],
+#     # Q : process covariance
+#     [
+#         [0.01, 0, 0, 0],
+#         [0, 0.01, 0, 0],
+#         [0, 0, 0.05, 0],
+#         [0, 0, 0, 0.05]
+#     ],
 
-    # R : observation covariance
-    [
-        [0.5, 0],
-        [0, 0.5]
-    ]
-])
+#     # R : observation covariance
+#     [
+#         [0.5, 0],
+#         [0, 0.5]
+#     ]
+    
+# ],
+# illustrator)
 
 
-data = sim.generate_data(
-    trials=10,
-    lengths=100,
-    seed=[0, 0, 1, 1],
-    control_function=sinusoidal_controller
-)
+# data = sim.generate_data(
+#     trials=10,
+#     lengths=100,
+#     seed=[0, 0, 1, 1],
+#     control_function=sinusoidal_controller
+# )

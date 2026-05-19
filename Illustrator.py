@@ -166,17 +166,24 @@ class Illustrator:
         if trial_list is None:
             trial_list = np.arange(self.trial_cnt)
 
+        #of the trials selected we are going to concantenate the data
+
+
+
         psd_results = {}
         for neuron in neuron_list:
             psd_results[neuron] = []
-            for trial in trial_list:
-                signal = self.observation[trial, time_list, neuron]
-                freqs, psd = welch(signal)
-                psd_results[neuron].append((freqs, psd))
 
+            neuron_data = self.observation[trial_list][:, time_list, neuron].reshape(-1)  # Concatenate across trials and time
+            freqs, psd = welch(neuron_data, fs=1.0 / (time_list[1] - time_list[0]), nperseg=min(256, len(neuron_data)))
+            psd_results[neuron].append((freqs, psd))
+             
         return psd_results
+
+    #def empirical_observability_gramian(self):
+
     
-    
+
         
 
 
@@ -467,7 +474,9 @@ class Illustrator:
         if (neuron_list is not None) and (trial_list is not None) and (time_list is not None):
             psd_results = self.get_PSD(neuron_list, time_list, trial_list)
         else:
-            raise ValueError("At least one of neuron_list, time_list, or trial_list must be provided.")    
+            default_trial_time_neuron_lists = self.default_trial_time_neuron_list()
+            psd_results = self.get_PSD(default_trial_time_neuron_lists[2], default_trial_time_neuron_lists[1], default_trial_time_neuron_lists[0]) 
+        
 
         plt.figure(figsize=(10, 6))
         for neuron, psd_list in psd_results.items():
@@ -476,7 +485,7 @@ class Illustrator:
 
         plt.xlabel("Frequency (Hz)")
         plt.ylabel("Power Spectral Density")
-        plt.title("Power Spectral Density of neurons {0} and trials {1}".format(neuron_list, trial_list))
+        plt.title("Power Spectral Density of neurons {} accross concatenated trial data from trials {1}".format(neuron_list, trial_list))
         plt.legend()
         plt.grid(alpha=0.3)
         plt.show()
@@ -693,6 +702,9 @@ class Illustrator:
         
         plt.tight_layout()
         plt.show()
+
+
+
 
 
     
