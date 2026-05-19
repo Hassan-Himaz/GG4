@@ -15,6 +15,7 @@ from calendar import c
 
 import numpy as np
 from scipy.optimize import minimize
+import scipy.linalg as sla
 import test
 from tqdm import tqdm
 
@@ -106,7 +107,10 @@ class PEM_Framework():
         return generated_dataset
     
 
-    def calculate_innovations(self, real_data: np.ndarray,trial,lds_params:np.ndarray,u:np.ndarray) -> [np.ndarray,np.ndarray]:
+    def calculate_innovations(self,
+                              real_data: np.ndarray,
+                              trial,lds_params:tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+                              u:np.ndarray|None) -> tuple[np.ndarray,np.ndarray]:
         '''
         Use to calculate the innovations (error between our predicted next output and the actual next output) of the model on the real data. 
 
@@ -154,41 +158,44 @@ class PEM_Framework():
         mu = mu_0.copy()
         P = P_0.copy()
 
-        for time in range(0,timepoints):
-            #prediction next hidden state
+        # for time in range(0,timepoints):
+        #     #prediction next hidden state
 
-            if time == 0:
-                mu_pred = mu_0.copy()
-                P_pred  = P_0.copy()
-            else:
-                mu_pred = A @ mu + B @ u[time-1]
-                P_pred  = A @ P @ A.T + Q
+        #     if time == 0:
+        #         mu_pred = mu_0.copy()
+        #         P_pred  = P_0.copy()
+        #     else:
+        #         mu_pred = A @ mu + B @ u[time-1]
+        #         P_pred  = A @ P @ A.T + Q
 
-            #predicting next observed state
-            y_pred = C @ mu_pred
-            S = C @ P_pred @ C.T + R
+        #     #predicting next observed state
+        #     y_pred = C @ mu_pred
+        #     S = C @ P_pred @ C.T + R
 
 
-            #innovation
-            e = data_time_series[time] - y_pred
+        #     #innovation
+        #     e = data_time_series[time] - y_pred
 
-            #add to innovations array
-            innovations[time] = e
-            innovations_covariance[time] = S
+        #     #add to innovations array
+        #     innovations[time] = e
+        #     innovations_covariance[time] = S
 
-            #update using kalman filter equations
-            #where K is the kalman gain --> minimum current output covariance
+        #     #update using kalman filter equations
+        #     #where K is the kalman gain --> minimum current output covariance
 
-            K = np.linalg.solve(S.T, (P_pred @ C.T).T).T
+        #     K = np.linalg.solve(S.T, (P_pred @ C.T).T).T
 
-            mu = mu_pred + K @ e
-            P = (np.eye(num_hidden_states) - K @ C) @ P_pred
+        #     mu = mu_pred + K @ e
+        #     P = (np.eye(num_hidden_states) - K @ C) @ P_pred
 
         return innovations, innovations_covariance
     
 
 
-    def calculate_NLL(self,real_data:np.ndarray,lds_params:np.ndarray,u: np.ndarray) -> float:
+    def calculate_NLL(self,
+                      real_data:np.ndarray,
+                      lds_params:tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+                      u: np.ndarray |None) -> float:
         '''
         Use to return the negative log likelihood of the innovations on real data
 
@@ -222,8 +229,27 @@ class PEM_Framework():
                 S = innovations_covariance[time]
 
                 #calculate negative log likelihood of this innovation
-                log_likelihood = 0.5 * (e.T @ np.linalg.inv(S) @ e + np.log(np.linalg.det(S)) + num_observed_states * np.log(2 * np.pi))
-                total += log_likelihood
+
+                #use cholesky instead of matrix inverses
+
+
+                try:
+                    L = np.linalg.cholesky(S)             # S = L @ L.T
+                except np.linalg.LinAlgError:
+                    return np.inf  
+
+                L = np.linalg.cholesky(S)              # S = L L^T
+                z = sla.solve_triangular(L, e, lower=True)
+                log_det_S = 2.0 * np.sum(np.log(np.diag(L)))
+                ll = 0.5 * (z @ z + log_det_S + num_observed_states * np.log(2*np.pi))
+
+                total +=  ll
+
+
+
+                #log-likelihood calculation from before
+                # log_likelihood = 0.5 * (e.T @ np.linalg.inv(S) @ e + np.log(np.linalg.det(S)) + num_observed_states * np.log(2 * np.pi))
+                # total += log_likelihood
         
         return total
     
@@ -233,8 +259,8 @@ class PEM_Framework():
 
     #helper methods
     
-    def random_init(self, d: int, n: int, m: int, seed: int = None, 
-                    stability_radius: float = 0.9) -> list:
+    def random_init(self, d: int, n: int, m: int, seed: int|None, 
+                    stability_radius: float = 0.9) -> tuple[np.ndarray,np.ndarray,np.ndarray,np.ndarray,np.ndarray,np.ndarray,np.ndarray]:
         """
         helper to randomly initialise the parameters of the model 
 
@@ -258,7 +284,7 @@ class PEM_Framework():
         mu_0 = rng.standard_normal(d) * 0.1
         P_0 = np.eye(d)
         
-        return [A, B, C, Q, R, mu_0, P_0]
+        return A, B, C, Q, R, mu_0, P_0
 
     
 
@@ -277,7 +303,7 @@ class PEM_Framework():
             L_P0.ravel(),
     ])
 
-    def unpack_params(self, flat: np.ndarray, d: int, n: int, m: int) -> list:
+    def unpack_params(self, flat: np.ndarray, d: int, n: int, m: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Reverse of pack_params.
         
@@ -301,23 +327,29 @@ class PEM_Framework():
         L_P0 = np.tril(flat[i:i+d*d].reshape(d, d));  i += d*d
         P_0  = L_P0 @ L_P0.T + 1e-6 * np.eye(d)
         
-        return [A, B, C, Q, R, mu_0, P_0]
+        return A, B, C, Q, R, mu_0, P_0
     
 
-    def objective(self, flat_params, real_data, dims, u=None):
+    def objective(self,
+                flat_params: np.ndarray,
+                real_data,
+                dims, 
+                u:np.ndarray|None) ->float:
         """NLL as a function of flat parameter vector."""
         try:
             params = self.unpack_params(flat_params, **dims)
             return self.calculate_NLL(real_data, params, u)
+    
         except np.linalg.LinAlgError:
             return 1e10  # filter blew up, return huge penalty
 
+    
     
 
 
     #---------------------------------------------------------------------------------------------
     
-    def fit(self,real_data: np.ndarray, u: np.ndarray):
+    def fit(self,real_data: np.ndarray, u: np.ndarray) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],float]:
         '''
         Use to now fit the LDS parameters by minimising the negative log-likelihood of the innovations
 
@@ -340,12 +372,15 @@ class PEM_Framework():
         '''
         num_observed_neurons = real_data.shape[2]
 
-        best_nll = np.inf
-        best_params = None
-
         latent_state_dimension = self.number_hidden_states
         observed_state_dimension = self.number_observed_states
         input_dimension = self.number_inputs
+
+        best_nll = np.inf
+        best_params = self.random_init(latent_state_dimension, observed_state_dimension, input_dimension,seed = 1)
+        
+
+        
 
         dims = {'d': latent_state_dimension, 'n': observed_state_dimension, 'm': input_dimension}
 
@@ -354,6 +389,7 @@ class PEM_Framework():
 
         for restart in range(self.number_restarts):
             init_params = self.random_init(latent_state_dimension, observed_state_dimension, input_dimension, seed=restart)
+
             flat_init = self.pack_params(*init_params)
 
             # Inner bar that counts iterations within this restart
@@ -392,7 +428,7 @@ class PEM_Framework():
             data_set: np.ndarray,
             training_trials: list ,
             testing_trials: list,
-    ) -> tuple[np.ndarray, float,float]:
+    ) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray], float,float]:
         '''
         Use to run the whole PEM procedure on a given dataset, which will return the fitted parameters of the model.
 
@@ -414,7 +450,7 @@ class PEM_Framework():
 
         #then we can fit the model to the data using our fit method
 
-        fitted_params, nll = self.fit(data_set[training_trials], u=None)
+        fitted_params, nll = self.fit(data_set[training_trials], u=np.ndarray([0,0]))
 
         # then want to see how well the model performs on held out trial data
         test_nll = self.calculate_NLL(data_set[testing_trials], fitted_params, u=None)
