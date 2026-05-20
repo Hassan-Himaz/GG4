@@ -1,14 +1,14 @@
-''' going to be using Prediction Error Minimization (PEM) as a framework for understanding how the brain works.
+#  going to be using Prediction Error Minimization (PEM) as a framework for understanding how the brain works.
 
 
-    going to be choosing number of hidden states, number of observed states(fixed by neurons) and number of inputs
+# going to be choosing number of hidden states, number of observed states(fixed by neurons) and number of inputs
 
-    then will randomly initialise the matrices A, B, C, Q, R
+# then will randomly initialise the matrices A, B, C, Q, R
 
-    then will try to use iterative methods to fit the data.
+# then will try to use iterative methods to fit the data.
 
 
-'''
+
 
 
 from calendar import c
@@ -19,10 +19,13 @@ import scipy.linalg as sla
 import test
 from tqdm import tqdm
 
+from Illustrator import Illustrator
+
 class PEM_Framework():
 
     def __init__(
         self,
+        illustrator: Illustrator,
         number_hidden_states: int = 2,
         number_observed_states: int = 16,
         number_inputs: int = 0,
@@ -33,6 +36,9 @@ class PEM_Framework():
         self.number_observed_states = number_observed_states
         self.number_inputs = number_inputs
         self.number_restarts = number_restarts
+        self.illustrator = illustrator
+        self.observation = self.illustrator.observation
+
 
         self.A = np.random.rand(number_hidden_states, number_hidden_states)  # Dynamics matrix
         self.B = np.random.rand(number_hidden_states, number_inputs)  # Control matrix
@@ -81,7 +87,7 @@ class PEM_Framework():
     def generate_dataset(
             self,
             num_trials: int = 5,
-            ) -> np.ndarray:
+            ) -> np.ndarray| None:
         
         """
         Use to generate a dataset of multiple trials using the current parameters of the model. This will be used to test the fitting procedure.
@@ -98,11 +104,13 @@ class PEM_Framework():
         
         
         """
+        generated_dataset = np.zeros(shape = np.shape(self.observation))
         for trial in range(num_trials):
             trial_data = self.generate_trial()
             if trial == 0:
                 generated_dataset = np.zeros((num_trials, trial_data.shape[0], trial_data.shape[1]))
-            generated_dataset[trial] = trial_data
+            else:
+                generated_dataset[trial] = trial_data
 
         return generated_dataset
     

@@ -1,4 +1,5 @@
 import time
+from typing import Iterable
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.linalg as la
@@ -280,19 +281,19 @@ class Illustrator:
         var_per_neuron = np.var(self.observation, axis=(0, 1))
 
         # Average over trials first, then find peak over time
-        mean_timecourse = np.mean(self.observation, axis=0)  # shape: (time, neuron)
+        mean_timecourse = np.asarray(np.mean(self.observation, axis=0))  # shape: (time, neuron)
         peak_value = np.max(mean_timecourse, axis=0)
         peak_time = np.argmax(mean_timecourse, axis=0)
 
         # Peak slope: smooth + differentiate, then take max magnitude per neuron
-        slopes = savgol_filter(
+        slopes = np.asarray(savgol_filter(
             mean_timecourse,
             window_length=5,
             polyorder=2,
             deriv=1,
             delta=1.0,
             axis=0,                      # IMPORTANT: differentiate along time
-        )
+        ))
         peak_slope = np.max(np.abs(slopes), axis=0)
 
         stats = {
@@ -301,7 +302,7 @@ class Illustrator:
             "variance": var_per_neuron,
             "peak_value": peak_value,
             "peak_time": peak_time,
-            "peak slope": peak_slope,
+            "peak_slope": peak_slope,
         }
 
         print("Neuron statistics")
@@ -562,7 +563,7 @@ class Illustrator:
 
         plt.xlabel("Frequency (Hz)")
         plt.ylabel("Power Spectral Density")
-        plt.title("Power Spectral Density of neurons {} accross concatenated trial data from trials {1}".format(neuron_list, trial_list))
+        plt.title("Power Spectral Density of neurons {0} accross concatenated trial data from trials {1}".format(neuron_list, trial_list))
         plt.legend()
         plt.grid(alpha=0.3)
         plt.show()
@@ -632,59 +633,6 @@ class Illustrator:
         plt.show()
 
         return explained_variance, cumulative_variance
-
-   
-
- 
-    #--------------------------------------------------------------------
-    #matrix visualisation
-
-    def plot_matrix(self, matrix: np.ndarray, title: str = "Matrix Plot", 
-                    color_coded: bool = True, show_numbers: bool = False, cmap: str = 'bwr'):
-        """
-        Displays a 2D matrix layout cleanly with synchronized grid markers.
-        
-        Parameters
-        ----------
-        matrix : np.ndarray
-            The 2D matrix array to visualize.
-        title : str
-            The title header appended to the plot window.
-        color_coded : bool
-            If True, colors the pixels using a color map. If False, prints a grayscale layout.
-        show_numbers : bool
-            If True, overlays the actual numeric values inside each matrix cell.
-        cmap : str
-            Matplotlib colormap profile string (e.g., 'bwr', 'coolwarm', 'viridis').
-        """
-        fig, ax = plt.subplots(figsize=(7, 5.5))
-        
-        if color_coded:
-            # Anchor maximum color ranges symmetrically around 0 for diverging maps
-            vmax = np.max(np.abs(matrix))
-            vmax = vmax if vmax > 0 else 1.0
-            vmin = -vmax if cmap in ['bwr', 'seismic', 'coolwarm'] else np.min(matrix)
-            
-            heatmap = ax.imshow(matrix, cmap=cmap, vmin=vmin, vmax=vmax, aspect='auto')
-            plt.colorbar(heatmap, label='Coefficient Intensity Value')
-        else:
-            heatmap = ax.imshow(matrix, cmap='gray', aspect='auto')
-            plt.colorbar(heatmap, label='Value Scale')
-
-        # Map dynamic tick marks for rows and columns
-        ax.set_xticks(np.arange(matrix.shape[1]))
-        ax.set_yticks(np.arange(matrix.shape[0]))
-        
-        return matrices
-    
-
-
-    
-
-
-    #-------------------------------------------------------------------
-
-    #hankel matrix method
 
 
     
@@ -787,7 +735,7 @@ class Illustrator:
             H[i * self.neuron_cnt : (i + 1) * self.neuron_cnt, :] = y_centered[i : i + N, :].T
             
         Y_p = H[: horizon * self.neuron_cnt, :]
-        Y_f = H[horizon * self.grid_cols if hasattr(self, 'grid_cols') else horizon * self.neuron_cnt :, :]
+        Y_f = H[horizon * self.neuron_cnt :, :]
 
         # 3. Geometric Projection
         R_ff = np.dot(Y_f, Y_p.T)
@@ -828,7 +776,10 @@ class Illustrator:
         
         # Add a unified legend for both axes lines
         lines = line1 + line2
-        labels = [l.get_label() for l in lines]
+        labels = list()
+        for l in lines:
+            labels.append(l.get_label())
+            
         ax1.legend(lines, labels, loc='center right')
         
         plt.tight_layout()
