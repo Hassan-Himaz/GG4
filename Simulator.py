@@ -259,7 +259,7 @@ class Simulator:
         tk.Spinbox(dim_frame, from_=1, to=5, width=4, textvariable=u_dim_var,
                 command=lambda: resize_inputs(u_dim_var.get())).grid(row=1, column=1, padx=4)
         
-
+        #spectra block setup
         spectra = tk.Frame(root)
         spectra.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=8)
         tk.Label(spectra, text="spectra", font=("", 9, "bold")).pack(anchor="w", pady=(0, 4))
@@ -272,6 +272,43 @@ class Simulator:
                         anchor="w", width=28)
             lbl.pack(anchor="w")
             spectra_labels[name] = lbl
+
+        #neuron toggle block setup
+        # --- plot controls column ---
+        plot_ctrl = tk.Frame(root)
+        plot_ctrl.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=8)
+        tk.Label(plot_ctrl, text="plot controls", font=("", 9, "bold")).pack(anchor="w", pady=(0, 4))
+
+        show_real_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(plot_ctrl, text="show real data", variable=show_real_var,
+                    command=lambda: redraw()).pack(anchor="w")
+
+        neuron_frame = tk.LabelFrame(plot_ctrl, text="neurons", padx=4, pady=2)
+        neuron_frame.pack(fill=tk.X, pady=(8, 4))
+        neuron_vars = {}   # {neuron_index: BooleanVar}
+
+        def build_neuron_checkboxes():
+            for child in neuron_frame.winfo_children():
+                child.destroy()
+            neuron_vars.clear()
+            n_neurons = self.observation.shape[-1]
+            for i in range(n_neurons):
+                var = tk.BooleanVar(value=True)
+                neuron_vars[i] = var
+                tk.Checkbutton(neuron_frame, text=f"neuron {i}", variable=var,
+                            command=lambda: redraw()).pack(anchor="w")
+
+            # quick toggles
+            btns = tk.Frame(plot_ctrl)
+            btns.pack(fill=tk.X, pady=(4, 0))
+            def set_all(v):
+                for var in neuron_vars.values():
+                    var.set(v)
+                redraw()
+            tk.Button(btns, text="all",  command=lambda: set_all(True)).pack(side=tk.LEFT, expand=True, fill=tk.X)
+            tk.Button(btns, text="none", command=lambda: set_all(False)).pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+        build_neuron_checkboxes()
 
         # --- matrix panels (rebuild-able) ---
         panel_container = tk.Frame(controls)
@@ -458,11 +495,15 @@ class Simulator:
             ax.clear()
             t = np.arange(sim.shape[0])
             real = self.observation[0]
-            for n in range(sim.shape[1]):
-                ax.plot(t, real[:, n], label=f"real {n}", alpha=0.6)
-                ax.plot(t, sim[:, n],  label=f"sim {n}",  linestyle="--")
+            selected = [i for i, v in neuron_vars.items() if v.get()]
+            for n in selected:
+                if show_real_var.get() and n < real.shape[1]:
+                    ax.plot(t, real[:, n], label=f"real {n}", alpha=0.6)
+                if n < sim.shape[1]:
+                    ax.plot(t, sim[:, n], label=f"sim {n}", linestyle="--")
             ax.set_xlabel("time"); ax.set_ylabel("activation")
-            ax.legend(fontsize=8)
+            if selected:
+                ax.legend(fontsize=8)
             canvas.draw()
             update_spectra()
             status.config(text="ok")
