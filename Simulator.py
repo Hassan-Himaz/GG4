@@ -69,7 +69,8 @@ class Simulator:
     def _generate_trial(self,
                          length:int, #
                          seed:tuple[np.ndarray,np.ndarray], #  seed the inital hidden state value with the infered starting mean - seed should be tuple(m_0,P_0)
-                         input_function: Callable) -> np.ndarray:
+                         input_function: Callable,
+                         return_state=False):
         '''
         will return timepoint x neuron dimensional array  for a single simulated trial
         
@@ -79,21 +80,16 @@ class Simulator:
         #intial latent state
         latent_state = rng.multivariate_normal(seed[0],seed[1])
         observed_state = np.matmul(self.C,latent_state) + rng.multivariate_normal(np.zeros(self.y_dimensions),self.R)
-        data = [observed_state]
+        data, states = [observed_state], [latent_state]
         for time in range(length-1):
             latent_state = np.matmul(self.A,latent_state) + np.matmul(self.B,input_function(time,data))+ rng.multivariate_normal(np.zeros(self.x_dimensions),self.Q)
             observed_state = np.matmul(self.C,latent_state) + rng.multivariate_normal(np.zeros(self.y_dimensions),self.R)
             data.append(observed_state)
-            
-        # print(data)
-
-        # print(type(data))
+            states.append(latent_state)
         data = np.asarray(data)
-        # print(data)
-
-        # print(type(data))
-
-        return data
+        states = np.asarray(states)
+            
+        return (data, states) if return_state else data
     
     def compare_plot(self,seed):
         '''
@@ -237,8 +233,15 @@ class Simulator:
         controls = tk.Frame(root)
         controls.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=8)
 
-        fig = Figure(figsize=(7, 4.5))
-        ax = fig.add_subplot(111)
+        fig = Figure(figsize=(7, 8))
+        ax_obs   = fig.add_subplot(311)
+        ax_input = fig.add_subplot(312, sharex=ax_obs)
+        ax_state = fig.add_subplot(313, sharex=ax_obs)
+        ax_obs.set_ylabel("activation")
+        ax_input.set_ylabel("input")
+        ax_state.set_ylabel("latent state")
+        ax_state.set_xlabel("time")
+        fig.tight_layout()
         canvas = FigureCanvasTkAgg(fig, master=root)
         canvas.get_tk_widget().pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
@@ -310,6 +313,38 @@ class Simulator:
 
         build_neuron_checkboxes()
 
+        #states and inputs checkboxes
+        input_plot_frame = tk.LabelFrame(plot_ctrl, text="inputs", padx=4, pady=2)
+        input_plot_frame.pack(fill=tk.X, pady=4)
+        input_vars = {}
+
+        state_plot_frame = tk.LabelFrame(plot_ctrl, text="states", padx=4, pady=2)
+        state_plot_frame.pack(fill=tk.X, pady=4)
+        state_vars = {}
+
+        def build_input_checkboxes():
+            for child in input_plot_frame.winfo_children():
+                child.destroy()
+            input_vars.clear()
+            for i in range(self.B.shape[1]):
+                var = tk.BooleanVar(value=True)
+                input_vars[i] = var
+                tk.Checkbutton(input_plot_frame, text=f"input {i}", variable=var,
+                            command=lambda: redraw()).pack(anchor="w")
+
+        def build_state_checkboxes():
+            for child in state_plot_frame.winfo_children():
+                child.destroy()
+            state_vars.clear()
+            for i in range(self.x_dimensions):
+                var = tk.BooleanVar(value=True)
+                state_vars[i] = var
+                tk.Checkbutton(state_plot_frame, text=f"state {i}", variable=var,
+                            command=lambda: redraw()).pack(anchor="w")
+
+        build_input_checkboxes()
+        build_state_checkboxes()
+
         # --- matrix panels (rebuild-able) ---
         panel_container = tk.Frame(controls)
         panel_container.pack(fill=tk.X)
@@ -370,6 +405,7 @@ class Simulator:
             self.x_dimensions = new_dim
 
             build_panels()
+            build_state_checkboxes() 
             redraw()
 
 
@@ -383,6 +419,7 @@ class Simulator:
             out[:, :c] = self.B[:, :c]
             self.B = out
             build_panels()
+            build_state_checkboxes() 
             redraw()
 
         build_panels()
@@ -486,28 +523,53 @@ class Simulator:
                 status.config(text=f"parse error: {e}"); return
 
             try:
-                sim = self._generate_trial(length=self.timestep_cnt,
-                                        seed=(self.mu_0, self.P_0),
-                                        input_function=input_fn)
+                sim, states = self._generate_trial(length=self.timestep_cnt,
+                                                seed=(self.mu_0, self.P_0),
+                                                input_function=input_fn,
+                                                return_state=True)
             except Exception as e:
                 status.config(text=f"sim error: {e}"); return
 
-            ax.clear()
+            for ax in (ax_obs, ax_input, ax_state):
+                ax.clear()
+
             t = np.arange(sim.shape[0])
             real = self.observation[0]
+
+            # observations
             selected = [i for i, v in neuron_vars.items() if v.get()]
             for n in selected:
                 if show_real_var.get() and n < real.shape[1]:
-                    ax.plot(t, real[:, n], label=f"real {n}", alpha=0.6)
+                    ax_obs.plot(t, real[:, n], label=f"real {n}", alpha=0.6)
                 if n < sim.shape[1]:
-                    ax.plot(t, sim[:, n], label=f"sim {n}", linestyle="--")
-            ax.set_xlabel("time"); ax.set_ylabel("activation")
+                    ax_obs.plot(t, sim[:, n], label=f"sim {n}", linestyle="--")
             if selected:
-                ax.legend(fontsize=8)
+                ax_obs.legend(fontsize=8, loc="upper right")
+
+            # inputs
+            selected_in = [i for i, v in input_vars.items() if v.get()]
+            if selected_in:
+                u_trace = np.array([input_fn(ti, []) for ti in t])
+                for i in selected_in:
+                    ax_input.plot(t, u_trace[:, i], label=f"u_{i}")
+                ax_input.legend(fontsize=8, loc="upper right")
+
+            # states
+            selected_st = [i for i, v in state_vars.items() if v.get()]
+            for i in selected_st:
+                ax_state.plot(t, states[:, i], label=f"x_{i}")
+            if selected_st:
+                ax_state.legend(fontsize=8, loc="upper right")
+
+            ax_obs.set_ylabel("activation")
+            ax_input.set_ylabel("input")
+            ax_state.set_ylabel("latent state")
+            ax_state.set_xlabel("time")
+            fig.tight_layout()
             canvas.draw()
             update_spectra()
             status.config(text="ok")
-            
+                        
         def save_csv():
             import os, csv, datetime
 
