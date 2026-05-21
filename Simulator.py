@@ -9,6 +9,7 @@ from typing import Callable
 from Controllers import Controllers
 from PEM_framework import PEM_Framework
 
+
 class Simulator:
 
     """
@@ -115,8 +116,104 @@ class Simulator:
             return np.full(num_inputs,amplitude)
         else: 
             return np.zeros(num_inputs)
+        
+    @staticmethod
+    def load_latest_dump(folder: str = "trial_dumps"):
+        """Load the most recent CSV dump.
+
+        Returns (params, df):
+            params: dict of header metadata (input type, matrices, etc.)
+            df:     pandas DataFrame with columns t, real_*, sim_*, input_*
+        """
+        import os, pandas as pd
+
+        if not os.path.isdir(folder):
+            raise FileNotFoundError(f"folder '{folder}' does not exist — save a trial first")
+
+        files = sorted(f for f in os.listdir(folder) if f.endswith(".csv"))
+        if not files:
+            raise FileNotFoundError(f"no CSVs in {folder}")
+
+        path = os.path.join(folder, files[-1])
+
+        # parse header comments
+        params = {}
+        with open(path) as f:
+            for line in f:
+                if not line.startswith("#"):
+                    break
+                key, _, val = line.lstrip("# ").partition(":")
+                if key.strip():
+                    params[key.strip()] = val.strip()
+        params["_filename"] = files[-1]
+
+        df = pd.read_csv(path, comment="#")
+        return params, df
+            
+
+    def _open_comparison_window(self):
+            """Pop-up window for running Illustrator methods on real and saved sim data.
+                to be used in explore
+            
+            """
+            import tkinter as tk
+            import os
+
+            # check there's actually a dump to compare against
+            if not os.path.isdir("trial_dumps") or not os.listdir("trial_dumps"):
+                print("no dumps in trial_dumps/ — click 'Save trial to CSV' first")
+                return
+
+            win = tk.Toplevel()
+            win.title("Compare real vs simulated")
+
+            tk.Label(win, text="Illustrator method:").pack(anchor="w", padx=8, pady=(8, 2))
+
+            methods = [m for m in dir(self.illustrator)
+                    if not m.startswith("_")
+                    and callable(getattr(self.illustrator, m))]
+            method_var = tk.StringVar(value=methods[0] if methods else "")
+            tk.OptionMenu(win, method_var, *methods).pack(fill=tk.X, padx=8)
+
+            info = tk.Label(win, text="", fg="gray", justify="left", anchor="w",
+                            wraplength=300)
+
+            def run_comparison():
+                method = method_var.get()
+
+                # load latest dump
+                try:
+                    params, df = Simulator.load_latest_dump()
+                except Exception as e:
+                    info.config(text=f"load err: {e}"); return
+                sim_cols = sorted(c for c in df.columns if c.startswith("sim_"))
+                sim_obs = df[sim_cols].to_numpy()[np.newaxis, ...]
+
+                # run method on real, then on sim — swap observation in/out
+                original = self.illustrator.observation
+                try:
+                    self.illustrator.observation = self.observation
+                    getattr(self.illustrator, method)()
+                    self.illustrator.observation = sim_obs
+                    getattr(self.illustrator, method)()
+                    latest = sorted(os.listdir("trial_dumps"))[-1]
+                    param_lines = "\n".join(f"  {k}: {v}" for k, v in params.items()
+                                            if k.startswith("input"))
+                    info.config(text=f"ran {method} on real and on:\n{latest}\n{param_lines}")
+                except Exception as e:
+                    info.config(text=f"viz err: {e}")
+                finally:
+                    self.illustrator.observation = original
+
+            tk.Button(win, text="Compare", command=run_comparison).pack(fill=tk.X, padx=8, pady=4)
+            info.pack(fill=tk.X, padx=8, pady=(4, 8))
+
+
     #graphics pop-up window
     def explore(self):
+
+    
+
         """Live parameter tweaking with a tkinter panel."""
         import tkinter as tk
         from matplotlib.figure import Figure
@@ -357,10 +454,59 @@ class Simulator:
             canvas.draw()
             update_spectra()
             status.config(text="ok")
+            
+        def save_csv():
+            import os, csv, datetime
 
-        tk.Button(controls, text="Update (or hit Return)", command=redraw).pack(pady=6)
-        status = tk.Label(controls, text="", fg="gray")
-        status.pack()
+            try:
+                input_fn = build_input()
+                sim = self._generate_trial(length=self.timestep_cnt,
+                                        seed=(self.mu_0, self.P_0),
+                                        input_function=input_fn)
+            except Exception as e:
+                status.config(text=f"sim error: {e}"); return
+
+            save_dir = "trial_dumps"
+            os.makedirs(save_dir, exist_ok=True)
+
+            fname = f"trial_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            path = os.path.join(save_dir, fname)
+
+            real = self.observation[0]
+            T = sim.shape[0]
+            n_in = self.B.shape[1]
+
+            with open(path, "w", newline="") as f:
+                w = csv.writer(f)
+
+                # --- header: parameters as comments ---
+                w.writerow([f"# input_type: {input_type.get()}"])
+                for k, v in input_params[input_type.get()].items():
+                    w.writerow([f"# input_{k}: {v.get()}"])
+                for name in ["A", "B", "C", "Q", "R", "mu_0", "P_0"]:
+                    M = getattr(self, name)
+                    w.writerow([f"# {name}: {M.flatten().tolist()}  shape={M.shape}"])
+        
+                w.writerow([])
+
+                # --- data ---
+                y_dim = sim.shape[1]
+                w.writerow(["t"]
+                        + [f"real_{i}"  for i in range(y_dim)]
+                        + [f"sim_{i}"   for i in range(y_dim)]
+                        + [f"input_{i}" for i in range(n_in)])
+                for t in range(T):
+                    u = input_fn(t, [])
+                    w.writerow([t] + list(real[t]) + list(sim[t]) + list(u))
+
+            status.config(text=f"saved {fname}")
+
+        tk.Button(spectra, text="Update (or hit Return)", command=redraw).pack(fill=tk.X, pady=(12, 4))
+        tk.Button(spectra, text="Save trial to CSV",      command=save_csv).pack(fill=tk.X, pady=4)
+        tk.Button(spectra, text="Open comparison window",
+                command=lambda: self._open_comparison_window()).pack(fill=tk.X, pady=4)
+        status = tk.Label(spectra, text="", fg="gray", wraplength=240, justify="left")
+        status.pack(fill=tk.X, pady=(8, 0))
 
         redraw()
         root.mainloop()

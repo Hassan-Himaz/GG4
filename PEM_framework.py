@@ -199,7 +199,7 @@ class PEM_Framework():
         return innovations, innovations_covariance
     
 
-
+    
     def calculate_NLL(self,
                       real_data:np.ndarray,
                       lds_params:tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
