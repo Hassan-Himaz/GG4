@@ -1,5 +1,6 @@
 from cProfile import label
 
+
 from Illustrator import Illustrator
 import numpy as np
 import scipy.linalg as la
@@ -8,6 +9,7 @@ rng = np.random.default_rng()
 from typing import Callable
 from Controllers import Controllers
 from PEM_framework import PEM_Framework
+from LDSParams import LDSParams
 
 
 class Simulator:
@@ -17,20 +19,34 @@ class Simulator:
     Initialise with list or matrix parameters: A,B,C,Q,R
     """
 
-    def __init__(self,parameters,illustrator: Illustrator,controller):
+    def __init__(self,parameters:LDSParams|None,illustrator: Illustrator,controller:Controllers):
         """
         Initialize the Model with set Parameters
         Accepts a 3D numpy array of shape (A,B,C,Q,R,mu_0,P_0) and stores it for data generation
         Parameters:
             parameters (np.ndarray): 3D numpy array of shape (A,B,C,Q,R,mu_0,P_0)  - these need to be correct else will throw error
         """
-        self.A = parameters.A    # using the dataclass
-        self.B = parameters.B
-        self.C = parameters.C
-        self.Q = parameters.Q
-        self.R = parameters.R
-        self.mu_0 = parameters.mu_0
-        self.P_0 = parameters.P_0
+        # if controller is None:
+        #     defaul
+        #     self.controller = Controllers
+        
+
+        if parameters is not None:
+            self.A = parameters.A    # using the dataclass
+            self.B = parameters.B
+            self.C = parameters.C
+            self.Q = parameters.Q
+            self.R = parameters.R
+            self.mu_0 = parameters.mu_0
+            self.P_0 = parameters.P_0
+        else:
+            self.A = np.eye(2)    # default
+            self.B = np.eye(2)
+            self.C = np.eye(2)
+            self.Q = np.eye(2)
+            self.R = np.eye(2)
+            self.mu_0 = [0,0]
+            self.P_0 = np.eye(2)
 
 
         self.x_dimensions = len(self.Q)
@@ -119,12 +135,6 @@ class Simulator:
         
     @staticmethod
     def load_latest_dump(folder: str = "trial_dumps"):
-        """Load the most recent CSV dump.
-
-        Returns (params, df):
-            params: dict of header metadata (input type, matrices, etc.)
-            df:     pandas DataFrame with columns t, real_*, sim_*, input_*
-        """
         import os, pandas as pd
 
         if not os.path.isdir(folder):
@@ -136,20 +146,22 @@ class Simulator:
 
         path = os.path.join(folder, files[-1])
 
-        # parse header comments
         params = {}
+        skip = 0
         with open(path) as f:
             for line in f:
-                if not line.startswith("#"):
+                if line.startswith("#") or line.strip() == "":
+                    if line.startswith("#"):
+                        key, _, val = line.lstrip("# ").partition(":")
+                        if key.strip():
+                            params[key.strip()] = val.strip()
+                    skip += 1
+                else:
                     break
-                key, _, val = line.lstrip("# ").partition(":")
-                if key.strip():
-                    params[key.strip()] = val.strip()
         params["_filename"] = files[-1]
 
-        df = pd.read_csv(path, comment="#")
-        return params, df
-            
+        df = pd.read_csv(path, skiprows=skip)
+        return params, df            
 
     def _open_comparison_window(self):
             """Pop-up window for running Illustrator methods on real and saved sim data.

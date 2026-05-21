@@ -2,42 +2,50 @@ import numpy as np
 from dynamax_EM_fitting import dynamax_EM_Fitting
 from PEM_framework import PEM_Framework
 from Illustrator import Illustrator
-from Simulator import Simulator, make_pulse,make_sine,make_zero
+from Simulator import Simulator
 from PEM_framework import PEM_Framework
 from LDSParams import LDSParams
+from Controllers import Controllers
 #--------------------------------------------
 
 
 ##   we want this to showcase everything that our
 
-
+    
 
 
 #----------------------------------------------
 
 def testing_suite():
     illustrator = Illustrator(np.load("ExampleDataset.npy"))
-    # illustrator.spam_everything()
+
+    controller_factory = Controllers()
+    controller = controller_factory.make_pulse(0,10,10,2)
 
 
-
-    # sim = Simulator(params = None, illustrator)
-
-
-
-    # pem = PEM_Framework(number_hidden_states=1, number_observed_states=16, number_inputs=2,number_restarts = 2)
-
-    # pem.pem_main(data_set=np.load("ExampleDataset.npy"), training_trials=[0,1,2,3], testing_trials=[4])
-
-
-    estimator = dynamax_EM_Fitting(chosen_state_dimension=2,chosen_input_dimension=0 ,num_em_iters=100, num_restarts = 10,illustrator = illustrator, )
-    em_fitted_params,best_lls = estimator.fit()
-    controller = make_pulse(0,5,2,2)
-    fitted_params = LDSParams.from_dynamax(em_fitted_params)
-
-    sim = Simulator(fitted_params,illustrator,controller)
-    sim.compare_plot()
+    #2 hidden state 2 input state matrices
+    A = np.array([[0.01,0 ],
+                [0, 0.01]])
+    B = np.array([[0.2, 0],
+                [0,0.2 ]])
+    C = np.array([[0.95, 0],
+                [0,0.95 ]])
+    Q = np.array([[0.95, 0],
+                [0,0.95 ]])
+    R = np.array([[0.95, 0],
+                [0,0.95 ]])
+    mu_0 = np.array([0,0])
+    P_0 = np.array([[0.95, 0],
+                [0,0.95 ]])
 
 
+    params = (A,B,C,Q,R,mu_0,P_0)
+
+    params = LDSParams.from_tuple(params)
+
+    sim = Simulator(params,illustrator,controller)
+    seed = (mu_0,P_0)
+    # sim.compare_plot(seed)
+    sim.explore()
 
 testing_suite()
