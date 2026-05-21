@@ -1,9 +1,13 @@
+from cProfile import label
+
 from Illustrator import Illustrator
 import numpy as np
 import scipy.linalg as la
 import matplotlib.pyplot as plt
 rng = np.random.default_rng()
 from typing import Callable
+from Controllers import Controllers
+from PEM_framework import PEM_Framework
 
 class Simulator:
 
@@ -53,35 +57,51 @@ class Simulator:
         will return timepoint x neuron dimensional array  for a single simulated trial
         
         '''
+
+        assert seed[0].ndim ==1 and seed[1].shape == (self.x_dimensions,self.x_dimensions)
         #intial latent state
         latent_state = rng.multivariate_normal(seed[0],seed[1])
         observed_state = np.matmul(self.C,latent_state) + rng.multivariate_normal(np.zeros(self.y_dimensions),self.R)
         data = [observed_state]
-        for time in range(length):
+        for time in range(length-1):
             latent_state = np.matmul(self.A,latent_state) + np.matmul(self.B,input_function(time,data))+ rng.multivariate_normal(np.zeros(self.x_dimensions),self.Q)
             observed_state = np.matmul(self.C,latent_state) + rng.multivariate_normal(np.zeros(self.y_dimensions),self.R)
             data.append(observed_state)
-        return np.ndarray(data)
+            
+        # print(data)
+
+        # print(type(data))
+        data = np.asarray(data)
+        # print(data)
+
+        # print(type(data))
+
+        return data
     
-    def compare_plot(self):
+    def compare_plot(self,seed):
         '''
         method that will plot real trial next to generated trial
+
+        seed should be tuple of (mu_0, P_0)
         
         '''
+        print('compare plot')
 
         
         
         real_data = self.observation[0] # choose to compare with trial 1
-        time = np.arange(self.timestep_cnt)
-        em_seed = (self.mu_0,self.P_0)
-        simulated_data = self._generate_trial(length = self.timestep_cnt,seed = em_seed, input_function = self.input_pulse)
+        print(real_data)
+        simulated_data = self._generate_trial(length = self.timestep_cnt,seed = seed, input_function = self.input_pulse)
+        time = np.arange(simulated_data.shape[0])
 
         plt.figure(1)
-        for neuron in range(self.illustrator._neuron_cnt):
-            plt.plot(time,real_data[:,neuron])
-            plt.plot(time,simulated_data[:,neuron])
+        for neuron in range(simulated_data.shape[1]):
+            plt.plot(time,real_data[:,neuron],label = 'real neuron, neuron number{}'.format(neuron))
+            plt.plot(time,simulated_data[:,neuron],label = 'simulated neuron, neuron number{}'.format(neuron))
         plt.xlabel('time')
-        plt.ylabel('')
+        plt.ylabel('neuron activation')
+        plt.legend()
+        plt.show()
 
     def input_pulse(self,
                     time:int,
@@ -95,93 +115,252 @@ class Simulator:
             return np.full(num_inputs,amplitude)
         else: 
             return np.zeros(num_inputs)
+    #graphics pop-up window
+    def explore(self):
+        """Live parameter tweaking with a tkinter panel."""
+        import tkinter as tk
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+        root = tk.Tk()
+        root.title("LDS parameter explorer")
+
+        controls = tk.Frame(root)
+        controls.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=8)
+
+        fig = Figure(figsize=(7, 4.5))
+        ax = fig.add_subplot(111)
+        canvas = FigureCanvasTkAgg(fig, master=root)
+        canvas.get_tk_widget().pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        entries = {}
+        self._controllers = Controllers()    # if not already on self
+
+        # --- dimension selector ---
+        dim_frame = tk.LabelFrame(controls, text="dimensions", padx=4, pady=2)
+        dim_frame.pack(fill=tk.X, pady=3)
+
+        tk.Label(dim_frame, text="hidden states (x_dim)").grid(row=0, column=0, sticky="w")
+        x_dim_var = tk.IntVar(value=self.x_dimensions)
+        tk.Spinbox(dim_frame, from_=1, to=5, width=4, textvariable=x_dim_var,
+                command=lambda: resize_state(x_dim_var.get())).grid(row=0, column=1, padx=4)
+        
+        tk.Label(dim_frame, text="inputs (u_dim)").grid(row=1, column=0, sticky="w")
+        u_dim_var = tk.IntVar(value=self.B.shape[1])
+        tk.Spinbox(dim_frame, from_=1, to=5, width=4, textvariable=u_dim_var,
+                command=lambda: resize_inputs(u_dim_var.get())).grid(row=1, column=1, padx=4)
         
 
-#input function factory
-def make_pulse(t_on: int, t_off: int, amplitude: float, num_inputs: int) -> Callable:
-    def pulse(time: int, data: list) -> np.ndarray:
-        if t_on <= time < t_off:
-            return np.full(num_inputs, amplitude)
-        return np.zeros(num_inputs)
-    return pulse
+        spectra = tk.Frame(root)
+        spectra.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=8)
+        tk.Label(spectra, text="spectra", font=("", 9, "bold")).pack(anchor="w", pady=(0, 4))
 
-def make_sine(freq: float, amplitude: float, num_inputs: int, dt: float = 1.0):
-    def sine(time, data):
-        return np.full(num_inputs, amplitude * np.sin(2 * np.pi * freq * time * dt))
-    return sine
+        spectra_labels = {}
+        for name in ["A", "B", "C", "Q", "R", "P_0"]:
+            frame = tk.LabelFrame(spectra, text=name, padx=4, pady=2)
+            frame.pack(fill=tk.X, pady=3)
+            lbl = tk.Label(frame, text="", justify="left", font=("Courier", 9),
+                        anchor="w", width=28)
+            lbl.pack(anchor="w")
+            spectra_labels[name] = lbl
 
-def make_zero(num_inputs: int):
-    return lambda time, data: np.zeros(num_inputs)
+        # --- matrix panels (rebuild-able) ---
+        panel_container = tk.Frame(controls)
+        panel_container.pack(fill=tk.X)
 
+        def panel(name, value):
+            arr = np.atleast_2d(value)
+            frame = tk.LabelFrame(panel_container, text=name, padx=4, pady=2)
+            frame.pack(fill=tk.X, pady=3)
+            grid = []
+            for i in range(arr.shape[0]):
+                row = []
+                for j in range(arr.shape[1]):
+                    e = tk.Entry(frame, width=7, justify="right")
+                    e.insert(0, f"{arr[i, j]:.4g}")
+                    e.grid(row=i, column=j, padx=1, pady=1)
+                    e.bind("<Return>", lambda *_: redraw())
+                    row.append(e)
+                grid.append(row)
+            entries[name] = grid
 
- #Example usage
-def step_controller(time,
-                    output,
-                    ):
-    
-    ''' 
+        def build_panels():
+            """(Re)create all matrix panels from current self.* values."""
+            for child in panel_container.winfo_children():
+                child.destroy()
+            entries.clear()
+            for name, val in [("A", self.A), ("B", self.B), ("C", self.C),
+                            ("Q", self.Q), ("R", self.R),
+                            ("mu_0", self.mu_0.reshape(1, -1)), ("P_0", self.P_0)]:
+                panel(name, val)
 
-    '''
-    return [1]
+        def resize_state(new_dim: int):
+            """Reshape A, B, Q, mu_0, P_0, and C's columns to new_dim. Preserve overlap; fill new entries sensibly."""
+            old = self.x_dimensions
+            if new_dim == old:
+                return
 
-def sinusoidal_controller(time, states):
+            def resize(M, shape, fill=0.0, identity_diag=False):
+                out = np.full(shape, fill)
+                if identity_diag:
+                    np.fill_diagonal(out, 0.9 if shape[0] == shape[1] else 1.0)
+                r = min(M.shape[0], shape[0])
+                c = min(M.shape[1], shape[1]) if M.ndim == 2 else 0
+                if M.ndim == 1:
+                    out[:r] = M[:r]
+                else:
+                    out[:r, :c] = M[:r, :c]
+                return out
 
-    return np.array([
-        np.sin(time / 5),
-        np.cos(time / 10)
-    ])
+            n_in = self.B.shape[1]
+            y    = self.y_dimensions
 
+            self.A    = resize(self.A,   (new_dim, new_dim), identity_diag=True)
+            self.B    = resize(self.B,   (new_dim, n_in))
+            self.C    = resize(self.C,   (y, new_dim))
+            self.Q    = resize(self.Q,   (new_dim, new_dim), identity_diag=True)
+            self.P_0  = resize(self.P_0, (new_dim, new_dim), identity_diag=True)
+            self.mu_0 = resize(self.mu_0, (new_dim,))
+            self.x_dimensions = new_dim
 
-
-
-# dt = 0.1
-# illustrator = Illustrator(np.load("ExampleDataset.npy"))
-
-# sim = Simulator([
-
-#     # A : dynamics matrix
-#     [
-#         [1, 0, dt, 0],
-#         [0, 1, 0, dt],
-#         [0, 0, 0.98, 0],
-#         [0, 0, 0, 0.98]
-#     ],
-
-#     # B : control matrix
-#     [
-#         [0, 0],
-#         [0, 0],
-#         [1, 0],
-#         [0, 1]
-#     ],
-
-#     # C : observation matrix
-#     [
-#         [1, 0, 0, 0],
-#         [0, 1, 0, 0]
-#     ],
-
-#     # Q : process covariance
-#     [
-#         [0.01, 0, 0, 0],
-#         [0, 0.01, 0, 0],
-#         [0, 0, 0.05, 0],
-#         [0, 0, 0, 0.05]
-#     ],
-
-#     # R : observation covariance
-#     [
-#         [0.5, 0],
-#         [0, 0.5]
-#     ]
-    
-# ],
-# illustrator)
+            build_panels()
+            redraw()
 
 
-# data = sim.generate_data(
-#     trials=10,
-#     lengths=100,
-#     seed=[0, 0, 1, 1],
-#     control_function=sinusoidal_controller
-# )
+        def resize_inputs(new_n_in: int):
+            """Reshape B's columns to new_n_in. Preserve overlap; new columns get zeros."""
+            if new_n_in == self.B.shape[1]:
+                return
+            x_dim = self.x_dimensions
+            out = np.zeros((x_dim, new_n_in))
+            c = min(self.B.shape[1], new_n_in)
+            out[:, :c] = self.B[:, :c]
+            self.B = out
+            build_panels()
+            redraw()
+
+        build_panels()
+        # --- input controller panel ---
+        input_frame = tk.LabelFrame(controls, text="input", padx=4, pady=2)
+        input_frame.pack(fill=tk.X, pady=6)
+
+        input_type = tk.StringVar(value="pulse")
+        input_params = {}            # {type_name: {param_name: Entry}}
+        input_subframes = {}         # {type_name: Frame}
+
+        def make_subframe(name, fields):
+            """fields: list of (label, default) tuples."""
+            sub = tk.Frame(input_frame)
+            params = {}
+            for r, (label, default) in enumerate(fields):
+                tk.Label(sub, text=label, width=10, anchor="w").grid(row=r, column=0)
+                e = tk.Entry(sub, width=7, justify="right")
+                e.insert(0, str(default))
+                e.bind("<Return>", lambda *_: redraw())
+                e.grid(row=r, column=1, padx=2, pady=1)
+                params[label] = e
+            input_params[name] = params
+            input_subframes[name] = sub
+
+        make_subframe("pulse", [("t_on", 5), ("t_off", 15), ("amplitude", 1.0)])
+        make_subframe("ramp",  [("t_on", 5), ("t_off", 40), ("slope", 0.2)])
+        make_subframe("sine",  [("freq", 0.05), ("amplitude", 1.0), ("dt", 1.0)])
+        make_subframe("zero",  [])
+
+        def switch_input(*_):
+            for sub in input_subframes.values():
+                sub.pack_forget()
+            input_subframes[input_type.get()].pack(fill=tk.X)
+            redraw()
+
+        dropdown = tk.OptionMenu(input_frame, input_type,
+                                "pulse", "ramp", "sine", "zero",
+                                command=switch_input)
+        dropdown.pack(fill=tk.X, pady=2)
+        input_subframes["pulse"].pack(fill=tk.X)  # default visible
+
+        def build_input():
+            """Construct the current input function from the active panel."""
+            n_in = self.B.shape[1]
+            p = {k: float(v.get()) for k, v in input_params[input_type.get()].items()}
+            t = input_type.get()
+            if t == "pulse":
+                return self._controllers.make_pulse(int(p["t_on"]), int(p["t_off"]),
+                                                    p["amplitude"], n_in)
+            if t == "ramp":
+                return self._controllers.make_ramp(int(p["t_on"]), int(p["t_off"]),
+                                                p["slope"], n_in)
+            if t == "sine":
+                return self._controllers.make_sine(p["freq"], p["amplitude"], n_in, p["dt"])
+            return self._controllers.make_zero(n_in)
+        
+        def update_spectra():
+            for name in ["A", "Q", "R", "P_0"]:
+                M = getattr(self, name)
+                try:
+                    eigs = np.linalg.eigvals(M)
+                    eigs = eigs[np.argsort(-np.abs(eigs))]   # sort by magnitude
+                    lines = []
+                    for e in eigs:
+                        if abs(e.imag) > 1e-9:
+                            lines.append(f"{e.real:+.3f}{e.imag:+.3f}j")
+                        else:
+                            lines.append(f"{e.real:+.3f}")
+                    if name == "A":
+                        lam = np.abs(eigs).max()
+                        tag = "stable" if lam < 1 else "unstable" if lam > 1 else "marginal"
+                        lines.append(f"|λ|max = {lam:.3f}  ({tag})")
+                    spectra_labels[name].config(text="\n".join(lines))
+                except Exception as e:
+                    spectra_labels[name].config(text=f"err: {e}")
+
+            # B and C are typically rectangular → singular values, not eigenvalues
+            for name in ["B", "C"]:
+                M = getattr(self, name)
+                try:
+                    sv = np.linalg.svd(M, compute_uv=False)
+                    text = "σ:\n" + "\n".join(f"{s:.3f}" for s in sv)
+                    cond = sv.max() / sv.min() if sv.min() > 1e-12 else float("inf")
+                    text += f"\ncond = {cond:.1f}"
+                    spectra_labels[name].config(text=text)
+                except Exception as e:
+                    spectra_labels[name].config(text=f"err: {e}")
+
+        # --- read / redraw (modified to use build_input) ---
+        def read(name):
+            return np.array([[float(e.get()) for e in row] for row in entries[name]])
+
+        def redraw():
+            try:
+                self.A, self.B, self.C = read("A"), read("B"), read("C")
+                self.Q, self.R, self.P_0 = read("Q"), read("R"), read("P_0")
+                self.mu_0 = read("mu_0").ravel()
+                input_fn = build_input()
+            except (ValueError, KeyError) as e:
+                status.config(text=f"parse error: {e}"); return
+
+            try:
+                sim = self._generate_trial(length=self.timestep_cnt,
+                                        seed=(self.mu_0, self.P_0),
+                                        input_function=input_fn)
+            except Exception as e:
+                status.config(text=f"sim error: {e}"); return
+
+            ax.clear()
+            t = np.arange(sim.shape[0])
+            real = self.observation[0]
+            for n in range(sim.shape[1]):
+                ax.plot(t, real[:, n], label=f"real {n}", alpha=0.6)
+                ax.plot(t, sim[:, n],  label=f"sim {n}",  linestyle="--")
+            ax.set_xlabel("time"); ax.set_ylabel("activation")
+            ax.legend(fontsize=8)
+            canvas.draw()
+            update_spectra()
+            status.config(text="ok")
+
+        tk.Button(controls, text="Update (or hit Return)", command=redraw).pack(pady=6)
+        status = tk.Label(controls, text="", fg="gray")
+        status.pack()
+
+        redraw()
+        root.mainloop()

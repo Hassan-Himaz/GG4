@@ -45,7 +45,12 @@ class LDSParams:
 
     @classmethod
     def from_tuple(cls, parameters) -> "LDSParams":
-        """Legacy tuple format -> LDSParams."""
+        """Legacy tuple format -> LDSParams.
+        
+        needs format A, B, C, Q, R, mu_0, P_0
+        
+        
+        """
         A, B, C, Q, R, mu_0, P_0 = (np.asarray(p) for p in parameters)
         return cls(A=A, B=B, C=C, Q=Q, R=R, mu_0=mu_0, P_0=P_0)
 
