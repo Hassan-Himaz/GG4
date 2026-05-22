@@ -236,7 +236,7 @@ class Illustrator:
         return stats
     
     def get_PSD(self, neuron_list: list[int]|np.ndarray|None=None, time_list: list[int]|np.ndarray|None=None,
-                trial_list: list[int]|np.ndarray|None=None, dt: float=1.0, average_across_trials: bool=False)->dict[np.int64, Tuple[np.ndarray, np.ndarray]]:
+                trial_list: list[int]|np.ndarray|None=None, dt: float=1.0, nperseg: int|None=None, average_across_trials: bool=False)->dict[np.int64, Tuple[np.ndarray, np.ndarray]]:
         """
         Get the Power Spectrum density for chosen neurons over a custom time region and custom trials.
         Can use Evoked PSD (average nerual response accross specified trials ) or Induced (average the PSD accross trials)
@@ -260,7 +260,7 @@ class Illustrator:
             Defaults to False
 
         Returns:
-            dict[np.int64, Tuple[np.ndarray, np.ndarray]]: {neuron_idx: (freqs, fft: np.float)}
+            dict[np.int64, Tuple[np.ndarray, np.ndarray]]: {neuron_idx: (freqs, psd: np.float)}
         """
 
         if neuron_list is None:
@@ -276,6 +276,9 @@ class Illustrator:
         if isinstance(trial_list, int):
             trial_list = [trial_list]
         
+        if nperseg is None:
+            nperseg = min(256, max(8,len(time_list)//8)) 
+        
         fs = 1/dt # Sampling psd
         psd_results = {}
 
@@ -288,7 +291,7 @@ class Illustrator:
             for i, neuron in enumerate(neuron_list):
                 signal = x_all[:, i]
 
-                freqs, psd = welch(signal, fs=fs, nperseg=min(256, len(signal)))
+                freqs, psd = welch(signal, fs=fs, nperseg=nperseg)
 
                 psd_results[neuron] = (freqs, psd)
         
@@ -302,7 +305,7 @@ class Illustrator:
 
                     x = self.observation[trial][time_list, neuron]
 
-                    freqs, psd = welch(x, fs=fs, nperseg=min(256, len(x)))
+                    freqs, psd = welch(x, fs=fs, nperseg=nperseg)
 
                     trial_psds.append(psd)
 
@@ -332,7 +335,12 @@ class Illustrator:
 
             dt (float): sampling time defaults to 1 
 
-            average_across_trials (bool): if true, first sample accross trials and then calculate ft
+            npersg (int): window length defaults to min(256, max(8,len(time_list)//8)) 
+
+            average_across_trials (bool): if true, first sample accross trials and then calculate fft
+            if false can destroy phase information
+            A better implementation in the future would be distinguish between magnitude an
+            
             Defaults to False
 
         Returns:
@@ -351,6 +359,7 @@ class Illustrator:
         
         if isinstance(trial_list, int):
             trial_list = [trial_list]
+        
         
         
         n_time = len(time_list)
@@ -384,7 +393,7 @@ class Illustrator:
     
         
          
-    def get_spectrogram(self,  neuron_list: list[int] | np.ndarray | None = None, time_list: list[int] | np.ndarray | None = None,
+    def get_spectrogram(self,  neuron_list: int|list[int] | np.ndarray | None = None, time_list: list[int] | np.ndarray | None = None,
                         trial_list: list[int] | np.ndarray | None = None, dt: float = 1.0, nperseg: int|None=None,
                         average_across_trials: bool = False) -> dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]:
         """
@@ -405,7 +414,7 @@ class Illustrator:
 
             dt (float): sampling time defaults to 1
 
-            npersg (int): window length defaults to min(256, len(time_list)//8) 
+            npersg (int): window length defaults to min(256, max(8,len(time_list)//8)) 
 
             average_across_trials (bool): if true, first sample accross trials and then calculate spectogram
             Defaults to False
@@ -422,7 +431,7 @@ class Illustrator:
             trial_list = np.arange(self.trial_cnt)
         
         if nperseg is None:
-            npersg = min(256, len(time_list)//8)
+            nperseg = min(256, max(8,len(time_list)//8)) 
 
         if isinstance(neuron_list, (int, np.integer)):
             neuron_list = [int(neuron_list)]
@@ -439,7 +448,7 @@ class Illustrator:
             for i,neuron in enumerate(neuron_list):
                 signal = x_all[:, i]
 
-                f, t, Sxx = spectrogram(signal, fs=fs, nperseg=min(256, len(time_list)//8))
+                f, t, Sxx = spectrogram(signal, fs=fs, nperseg=nperseg)
 
                 res[neuron] = (f, t, Sxx)
         else:
@@ -451,7 +460,7 @@ class Illustrator:
                 for trial in trial_list:
                     signal = self.observation[trial][time_list, neuron]
 
-                    f, t, Sxx = spectrogram(signal, fs=fs, nperseg=min(256, len(time_list)//8))
+                    f, t, Sxx = spectrogram(signal, fs=fs, nperseg=nperseg)
                     Sxx_trials.append(Sxx)
 
                 
@@ -721,11 +730,11 @@ class Illustrator:
         return {int(neuron): compute_cov(int(neuron)) for neuron in neuron_indices}
 
         
-    def _get_autocorrelation_function(self, neuron_index: list|None=None, trial_index: int | list[int] | np.ndarray | None = None,
+    def get_autocorrelation_function(self, neuron_index: int|list|None=None, trial_index: int | list[int] | np.ndarray | None = None,
                                   time_list: list[int]|np.ndarray|None=None, average_trials: bool=True, normalized = False)->dict[int, np.ndarray]:
         """
         
-        Work in process to implement
+        Work in process to implement. Might be buggy
         Compute the temporal autocorrelation function for selected neurons.
         Assume WSS
 
@@ -739,8 +748,10 @@ class Illustrator:
         Parameters
         ----------
         neuron_index : list[int] | np.ndarray | None
+            For single neurons 
             Neuron(s) to compute autocorrelation for.
             None => all neurons.
+
 
         trial_index : int | list[int] | np.ndarray | None
             Trials to include.
@@ -781,8 +792,11 @@ class Illustrator:
 
         if time_list is None:
             time_list = default_times
-        
-        trial_index = np.asarray(trial_index)
+
+        if isinstance(trial_index, int):
+            trial_index = [trial_index]
+        else:
+            trial_index = np.asarray(trial_index)
         time_list = np.asarray(time_list)
 
 
@@ -806,13 +820,14 @@ class Illustrator:
 
             return acorr
         
-        if isinstance(neuron_index, int):
-            return {neuron_index: compute_autocorr(neuron_index)}
-
+        
+        
         results = {}
         # Multiple neurons
         if neuron_index is None:
             neuron_indices = range(self.neuron_cnt)
+        elif isinstance(neuron_index, int):
+            neuron_indices = [neuron_index]
         else:
             neuron_indices = np.asarray(neuron_index)
 
@@ -1183,6 +1198,7 @@ class Illustrator:
             - "spectrogram"
         **kwargs :
             Additional plotting / computation parameters:
+            - nperseg(int): segment length (default: specified in computation)
             - dt (float): sampling interval (default = 1.0)
             - log_psd (bool): log-scale PSD plot
             - show (bool): whether to call plt.show() (default True)
@@ -1202,6 +1218,7 @@ class Illustrator:
         show = kwargs.get("show", True)
         log_psd = kwargs.get("log_psd", False)
         figsize = kwargs.get("figsize", None)
+        nperseg = kwargs.get("nperseg", None)
 
         neuron_list = np.arange(self.neuron_cnt) if neuron_list is None else neuron_list
         time_list = np.arange(self.timestep_cnt) if time_list is None else time_list
@@ -1231,7 +1248,7 @@ class Illustrator:
 
         # ---------------- PSD ----------------
         elif spectrum == "psd":
-            results = self.get_PSD(neuron_list, time_list, trial_list, dt=dt)
+            results = self.get_PSD(neuron_list, time_list, trial_list, dt=dt, nperseg=nperseg)
 
             for neuron, (freqs, psd) in results.items():
                 plt.figure(figsize=figsize)
@@ -1249,7 +1266,7 @@ class Illustrator:
 
         # ---------------- SPECTROGRAM ----------------
         elif spectrum == "spectrogram":
-            results = self.get_spectrogram(neuron_list, time_list, trial_list, dt=dt)
+            results = self.get_spectrogram(neuron_list, time_list, trial_list, dt=dt, nperseg=nperseg)
 
             for neuron, (f, t, Sxx) in results.items():
                 plt.figure(figsize=figsize)
@@ -1281,6 +1298,10 @@ class Illustrator:
         cmap : str
             Matplotlib colormap profile string (e.g., 'bwr', 'coolwarm', 'viridis').
         """
+        matrix = np.asarray(matrix)
+
+        if matrix.ndim != 2:
+            raise ValueError(f"matrix must be 2D, got shape {matrix.shape}")
         fig, ax = plt.subplots(figsize=(7, 5.5))
         
         if color_coded:
