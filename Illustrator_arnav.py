@@ -1,11 +1,11 @@
 import time
-from typing import Iterable
+from typing import Tuple, Iterable
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.linalg as la
 from scipy.signal import savgol_filter
 from statsmodels.tsa.stattools import adfuller
-from scipy.signal import spectrogram, coherence
+from scipy.signal import spectrogram, coherence, welch
 
 
 class Illustrator:
@@ -62,6 +62,15 @@ class Illustrator:
     
     @observation.setter
     def observation(self, new_observation: np.ndarray)->None:
+        if new_observation.ndim != 3:
+            raise ValueError(
+                f"observation must be a 3D array with shape "
+                f"(Trials, Timepoints, Neurons), got shape {new_observation.shape}."
+            )
+
+        if not isinstance(new_observation, np.ndarray):
+            raise ValueError('Ensure observation passed as a np array')
+
         self._observation = new_observation
         self._trial_cnt, self._timestep_cnt, self._neuron_cnt = new_observation.shape
 
@@ -71,63 +80,94 @@ class Illustrator:
 
     
     # Function to average accross all trials
-    def get_trial_averaged_mean(self, chosen_neurons: list[int]|np.ndarray|int|None=None)->np.ndarray:
+    def get_trial_average(self, chosen_neurons: list[int]|np.ndarray|int|None=None, chosen_trials: list[int]|np.ndarray|None=None)->np.ndarray:
         """
-        Use this function to obtain the trial averaged values for the desired neurons
-        Eg: for each time step accross 5 trials average the values for each neuron
-        If left None, returns time average for all the neurons accross trials
-        If list: ensure the list is 0 indexed count of neuron
+        Use this function to average the neural accross trials
+
+        Args:
+            chosen_neurons (list[int] | np.ndarray | int | None, optional): _description_. Defaults to None.
+
+        Raises:
+            ValueError: chosen Neuron index out of range
+            ValueError: invalid datatype 
+
+        Returns:
+            np.ndarray: 2 dimensional array (time_steps, number of neurons selected)
         """
+        if chosen_trials is None:
+            chosen_trials = np.arange(0, self.trial_cnt)
         if isinstance(chosen_neurons, list) or isinstance(chosen_neurons, np.ndarray):
-            if max(chosen_neurons)>self.neuron_cnt:
+            if max(chosen_neurons)>=self.neuron_cnt:
                 raise ValueError('One of the chosen neurons not in the dataset. Check indexing')
-            filtered_neurons = self.observation[:,:,chosen_neurons] # get neural data for the filtered neurons
+            filtered_neurons = self.observation[chosen_trials][:,:,chosen_neurons] # get neural data for the filtered neurons
             return np.mean(filtered_neurons, axis=0) 
         elif isinstance(chosen_neurons, int):
-            if chosen_neurons > self.neuron_cnt:
+            if chosen_neurons >= self.neuron_cnt:
                 raise ValueError('The chosen neuron is not in the dataset. Check indexing')
-            filtered_neurons = self.observation[:,:,chosen_neurons] # get neural data for the filtered neurons
+            filtered_neurons = self.observation[chosen_trials][:,:,chosen_neurons] # get neural data for the filtered neurons
             return np.atleast_2d(np.mean(filtered_neurons, axis=0)).T # Use atleast 2D such that structure preserved (timesteps, recording count)
         
         elif chosen_neurons is None:
-            return np.mean(self.observation[:,:,:],axis=0)
+            return np.mean(self.observation[chosen_trials,:,:],axis=0)
         else:
             raise ValueError('Invalid data type') 
     
-    def get_mean_per_neuron(self):
+    def get_mean_per_neuron(self)->np.ndarray:
         """
-        Get the mean value for each neuron
+        Calculate the mean value for each neuron accross timesteps and trials
+
+        Returns:
+            np.ndarray: returns an array of length (neuron_cnt)
         """
         return np.mean(self.observation, axis=(0, 1))
     
-    def get_std_per_neuron(self):
+    def get_std_per_neuron(self)->np.ndarray:
+        """
+        Calculate the std value for each neuron accross timesteps and trials
+
+        Returns:
+            np.ndarray: returns an array of length (neuron_cnt)
+        """
         return np.std(self.observation, axis=(0,1))
     
-    def get_variance_per_neuron(self):
+    def get_variance_per_neuron(self)->np.ndarray:
         """
-        Get the variance for each neuron accross trials and time steps.
-        This relates to the activity of a neuron accross all trials and timesteps
+        Calculate the variance value for each neuron accross timesteps and trials
+
+        Returns:
+            np.ndarray: returns an array of length (neuron_cnt)
         """
         return np.var(self.observation, axis=(0,1))
     
-    def get_trial_variance_per_neuron(self):
-        """
-        Get variance accross trials for a recording.
-        """
-        return np.var(self.observation, axis=0)
     
-    def get_signal_energy(self):
+    def get_signal_energy(self)->np.ndarray:
         """
-        Helps measure strength of signal accross trials and time
+        Calculate the signal energy (E[X^2]) value for each neuron accross timesteps and trials
+
+        Returns:
+            np.ndarray: returns an array of length (neuron_cnt)
         """
-        return np.mean(self.observation**2, axis=(0,1))
+        return np.mean(np.square(self.observation), axis=(0,1))
     
     def get_trial_averaged_peak_value_time(self):
-        mean_timecourse = self.get_trial_averaged_mean()
+        """
+        Calculate the peak value for each neuron accross trials
+
+        Returns:
+            np.ndarray: returns an array of length (neuron_cnt)
+        """
+        mean_timecourse = self.get_trial_average()
         return np.max(mean_timecourse, axis=0), np.argmax(mean_timecourse, axis=0)
     
-    def get_slopes(self):
-        mean_timecourse = self.get_trial_averaged_mean()
+    def get_response_slopes(self):
+        """
+        Calculate the time derivative for each neuron accross trials using SavGol filter
+
+        Returns:
+            np.ndarray: returns an array of shape (time_step, neuron_cnt)
+        """
+        mean_timecourse = self.get_trial_average()
+        # Savgol filter cleans up noise, polyorder 2-> quadratic, deriv-> linear slope
         return np.asarray(savgol_filter(
                                         mean_timecourse,
                                         window_length=5,
@@ -137,12 +177,19 @@ class Illustrator:
                                         axis=0,                      # IMPORTANT: differentiate along time
                                     ))
 
+    def get_trial_variance_per_neuron(self)->np.ndarray:
+        """
+        Calculate the variance value for each neuron accross trials
 
+        Returns:
+            np.ndarray: returns an array of shape (time_steps, neuron_cnt)
+        """
+        return np.var(self.observation, axis=0)
     
-    def get_neuron_statistics(self):
+    def get_neuron_statistics(self)->dict[str, np.ndarray]:
         """
         Compute useful summary statistics for each neuron/signal.
-        Assumes stationaryness of signal.
+        Assumes stationaryness of signal => Constant Mean (this may not be true if there is drift)
         Returns
         -------
         stats : dict
@@ -159,7 +206,7 @@ class Illustrator:
         peak_value, peak_time = self.get_trial_averaged_peak_value_time()
 
         # Peak slope: smooth + differentiate, then take max magnitude per neuron
-        slopes = self.get_slopes()
+        slopes = self.get_response_slopes()
         peak_slope = np.max(np.abs(slopes), axis=0)
 
         stats = {
@@ -179,19 +226,42 @@ class Illustrator:
                 f"Neuron {neuron_id:2d}: "
                 f"mean={mean_per_neuron[neuron_id]:.3f}, "
                 f"std={std_per_neuron[neuron_id]:.3f}, "
+                f"energy={signal_energy_per_neuron[neuron_id]: .3f}, "
                 f"var={var_per_neuron[neuron_id]:.3f}, "
                 f"peak={peak_value[neuron_id]:.3f}, "
-                f"peak_time={peak_time[neuron_id]}"
-                f"peak_slope = {peak_slope[neuron_id]}"
+                f"peak_time={peak_time[neuron_id]: .3f}, "
+                f"peak_slope={peak_slope[neuron_id]:.3f}"
             )
 
         return stats
     
-    def get_PSD(self, neuron_list: np.ndarray|None=None, time_list: np.ndarray|None=None,trial_list: np.ndarray|None=None):
-        """Use this to get the power spectral density of the neural processes
-        This can help understand the frequency content of the neural signals and identify any rhythmic patterns or oscillations.
+    def get_PSD(self, neuron_list: list[int]|np.ndarray|None=None, time_list: list[int]|np.ndarray|None=None,
+                trial_list: list[int]|np.ndarray|None=None, dt: float=1.0, average_across_trials: bool=False)->dict[np.int64, Tuple[np.ndarray, np.ndarray]]:
         """
-        from scipy.signal import welch
+        Get the Power Spectrum density for chosen neurons over a custom time region and custom trials.
+        Can use Evoked PSD (average nerual response accross specified trials ) or Induced (average the PSD accross trials)
+
+        Args:
+            neuron_list (list[int] | np.ndarray | None, optional): 
+            list of neurons for whom psd to be calculated.
+            Defaults to none implies for all neurons
+
+            time_list (list[int] | np.ndarray | None, optional):
+            timesteps indices at which psd to be calculated
+            Defaults to none implies for all timesteps
+            
+            trial_list (list[int] | np.ndarray | None, optional): 
+            trials considered for recording psd
+            Defaults to None implies for all trials
+
+            dt (float): sampling time defaults to 1 
+
+            average_across_trials (bool): if true, first sample accross trials and then calculate psd
+            Defaults to False
+
+        Returns:
+            dict[np.int64, Tuple[np.ndarray, np.ndarray]]: {neuron_idx: (freqs, fft: np.float)}
+        """
 
         if neuron_list is None:
             neuron_list = np.arange(self.neuron_cnt)
@@ -200,61 +270,284 @@ class Illustrator:
         if trial_list is None:
             trial_list = np.arange(self.trial_cnt)
 
-        #of the trials selected we are going to concantenate the data
-
+        if isinstance(neuron_list, int):
+            neuron_list = [neuron_list]
+        
+        if isinstance(trial_list, int):
+            trial_list = [trial_list]
+        
+        fs = 1/dt # Sampling psd
         psd_results = {}
-        for neuron in neuron_list:
-            psd_results[neuron] = []
 
-            neuron_data = self.observation[trial_list][:, time_list, neuron].reshape(-1)  # Concatenate across trials and time
-            freqs, psd = welch(neuron_data, fs=1.0 / (time_list[1] - time_list[0]), nperseg=min(256, len(neuron_data)))
-            psd_results[neuron].append((freqs, psd))
-             
+
+        if average_across_trials:
+
+            x_all = self.get_trial_average(neuron_list, trial_list)  # (time, neurons)
+            x_all = x_all[time_list, :]
+
+            for i, neuron in enumerate(neuron_list):
+                signal = x_all[:, i]
+
+                freqs, psd = welch(signal, fs=fs, nperseg=min(256, len(signal)))
+
+                psd_results[neuron] = (freqs, psd)
+        
+        else:
+
+            for neuron in neuron_list:
+
+                trial_psds = []
+
+                for trial in trial_list:
+
+                    x = self.observation[trial][time_list, neuron]
+
+                    freqs, psd = welch(x, fs=fs, nperseg=min(256, len(x)))
+
+                    trial_psds.append(psd)
+
+                mean_psd = np.mean(trial_psds, axis=0)
+
+                psd_results[neuron] = (freqs, mean_psd)
+
         return psd_results
-
-    def get_fft(self, neuron: int|None=None):
-        def calc_fft(neuron: int):
-            mean_activity = self.get_trial_averaged_mean(neuron)
-            fft_vals = np.fft.fft(mean_activity)
-            freqs = np.fft.fftfreq(len(mean_activity))
-            return fft_vals, freqs
-        
-        if neuron:
-            return {neuron: calc_fft(neuron)}
-        else:
-            res = {}
-            for neuron in range(self.neuron_cnt):
-                res[neuron] = calc_fft(neuron)
-            return res
+             
+    def get_fft(self, neuron_list: list[int]|np.ndarray|None=None, time_list: list[int]|np.ndarray|None=None,
+                trial_list: list[int]|np.ndarray|None=None, dt: float=1.0, average_across_trials: bool=False)->dict[np.int64, Tuple[np.ndarray, np.ndarray]]:
+        """
+        Get the Fourier Transform for chosen neurons over a custom time region and custom trials.
     
-    def get_spectogram(self, neuron: int|None=None):
-        def calc_spect(neuron):
-            return spectrogram(self.get_trial_averaged_mean(neuron))
-        if neuron:
-            return {neuron: calc_spect(neuron)}
-        else:
-            res = {}
-            for neuron in range(self.neuron_cnt):
-                res[neuron] = calc_spect(neuron)
-            return res
-    
-    def get_coherence(self, neuron1: int, neuron2: int):
-        activity1 = self.get_trial_averaged_mean(neuron1)
-        activity2 = self.get_trial_averaged_mean(neuron2)
-        return coherence(activity1, activity2)
-        
+        Args:
+            neuron_list (list[int] | np.ndarray | None, optional): 
+            list of neurons for whom ft to be calculated.
+            Defaults to none implies for all neurons
 
-    def get_inter_neuron_covariance_matrix(self, trial_idx=None)->np.ndarray:
-        """Use this to calculate the covariance matrix accross the neurons
-        A_{ij} = E[X_iX_j] - E[X_i]E[X_j] for X_i, X_j neurons
-        This can be studied how the overall activity levels influence from one neuron to another
+            time_list (list[int] | np.ndarray | None, optional):
+            timesteps indices at which ft to be calculated
+            Defaults to none implies for all timesteps
+            
+            trial_list (list[int] | np.ndarray | None, optional): 
+            trials considered for recording ft
+            Defaults to None implies for all trials
+
+            dt (float): sampling time defaults to 1 
+
+            average_across_trials (bool): if true, first sample accross trials and then calculate ft
+            Defaults to False
+
+        Returns:
+            dict[np.int64, Tuple[np.ndarray, np.ndarray]]: {neuron_idx: (freqs, fft: np.complex)}
         """
 
-        if not trial_idx:
+        if neuron_list is None:
+            neuron_list = np.arange(self.neuron_cnt)
+        if time_list is None:
+            time_list = np.arange(self.timestep_cnt)
+        if trial_list is None:
+            trial_list = np.arange(self.trial_cnt)
+
+        if isinstance(neuron_list, int):
+            neuron_list = [neuron_list]
+        
+        if isinstance(trial_list, int):
+            trial_list = [trial_list]
+        
+        
+        n_time = len(time_list)
+
+        fft_results= {}
+        freqs = np.fft.fftfreq(n_time, d=dt)
+        
+        if average_across_trials:
+        # average across trials first (evoked signal)
+            x_all = self.get_trial_average(neuron_list, trial_list)  # (time, neurons)
+            x_all = x_all[time_list, :]
+
+            for i, neuron in enumerate(neuron_list):
+                signal = x_all[:, i]
+                spectrum = np.fft.fft(signal)
+                fft_results[neuron] = (freqs, spectrum)
+
+        else:
+            # FFT per trial, then average complex spectrum (evoked-like averaging)
+            for neuron in neuron_list:
+                spectra = []
+
+                for trial in trial_list:
+                    signal = self.observation[trial][time_list, neuron]
+                    spectra.append(np.fft.fft(signal))
+
+                mean_spectrum = np.mean(spectra, axis=0)
+                fft_results[neuron] = (freqs, mean_spectrum)
+
+        return fft_results
+    
+        
+         
+    def get_spectrogram(self,  neuron_list: list[int] | np.ndarray | None = None, time_list: list[int] | np.ndarray | None = None,
+                        trial_list: list[int] | np.ndarray | None = None, dt: float = 1.0, nperseg: int|None=None,
+                        average_across_trials: bool = False) -> dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """
+        Get the spectogram for chosen neurons over a custom time region and custom trials.
+    
+        Args:
+            neuron_list (list[int] | np.ndarray | None, optional): 
+            list of neurons for whom spectogram to be calculated.
+            Defaults to none implies for all neurons
+
+            time_list (list[int] | np.ndarray | None, optional):
+            timesteps indices at which spectogram to be calculated
+            Defaults to none implies for all timesteps
+            
+            trial_list (list[int] | np.ndarray | None, optional): 
+            trials considered for recording spectogram
+            Defaults to None implies for all trials
+
+            dt (float): sampling time defaults to 1
+
+            npersg (int): window length defaults to min(256, len(time_list)//8) 
+
+            average_across_trials (bool): if true, first sample accross trials and then calculate spectogram
+            Defaults to False
+
+        Returns:
+            dict[np.int64, Tuple[np.ndarray, np.ndarray, np.ndarray]]: {neuron_idx: (freqs, time, spectogram)}
+        """
+
+        if neuron_list is None:
+            neuron_list = np.arange(self.neuron_cnt)
+        if time_list is None:
+            time_list = np.arange(self.timestep_cnt)
+        if trial_list is None:
+            trial_list = np.arange(self.trial_cnt)
+        
+        if nperseg is None:
+            npersg = min(256, len(time_list)//8)
+
+        if isinstance(neuron_list, (int, np.integer)):
+            neuron_list = [int(neuron_list)]
+        if isinstance(trial_list, (int, np.integer)):
+            trial_list = [int(trial_list)]
+
+        fs = 1.0 / dt
+        res = {}
+        if average_across_trials:
+            # average across trials first (evoked signal)
+            x_all = self.get_trial_average(neuron_list, trial_list)
+            x_all = x_all[time_list, :]
+
+            for i,neuron in enumerate(neuron_list):
+                signal = x_all[:, i]
+
+                f, t, Sxx = spectrogram(signal, fs=fs, nperseg=min(256, len(time_list)//8))
+
+                res[neuron] = (f, t, Sxx)
+        else:
+
+            for neuron in neuron_list:
+
+                Sxx_trials = []
+    
+                for trial in trial_list:
+                    signal = self.observation[trial][time_list, neuron]
+
+                    f, t, Sxx = spectrogram(signal, fs=fs, nperseg=min(256, len(time_list)//8))
+                    Sxx_trials.append(Sxx)
+
+                
+                Sxx_mean = np.mean(Sxx_trials, axis=0)
+
+                res[neuron] = (f, t, Sxx_mean)
+
+        return res
+        
+
+    def _get_coherence(self,neuron1: int, neuron2: int, time_list: list[int] | np.ndarray | None = None,
+                    trial_list: list[int] | np.ndarray | None = None, dt: float = 1.0,
+                    average_across_trials: bool = False)->Tuple[np.ndarray, np.ndarray]:
+        """
+        Get the coherence between 2 neurons over a custom time region and custom trials.
+        Work in progress. There might me a bug in this? 
+        Args:
+            neuron1 (int): neuron 1
+            neuron2 (int): neuron 2
+            
+            time_list (list[int] | np.ndarray | None, optional):
+            timesteps indices at which spectogram to be calculated
+            Defaults to none implies for all timesteps
+            
+            trial_list (list[int] | np.ndarray | None, optional): 
+            trials considered for recording spectogram
+            Defaults to None implies for all trials
+
+            dt (float): sampling time defaults to 1 
+
+            average_across_trials (bool): if true, first sample accross trials and then calculate spectogram
+            Defaults to False
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: frequency, and coherence values
+        """
+        if time_list is None:
+            time_list = np.arange(self.timestep_cnt)
+
+        if trial_list is None:
+            trial_list = np.arange(self.trial_cnt)
+
+        fs = 1.0 / dt
+
+        
+        if average_across_trials:
+
+            x1 = self.get_trial_average(neuron1)[time_list,0]
+            x2 = self.get_trial_average(neuron2)[time_list,0]
+            print(x1)
+            print(x2)
+            f, cxy = coherence(x1, x2, fs=fs)
+            return f, cxy
+
+        else:
+
+            coh_trials = []
+
+            for trial in trial_list:
+                x1 = self.observation[trial][time_list, neuron1]
+                x2 = self.observation[trial][time_list, neuron2]
+
+                f, cxy = coherence(x1, x2, fs=fs)
+                coh_trials.append(cxy)
+
+            return f, np.mean(coh_trials, axis=0)
+        
+
+    def get_inter_neuron_covariance_matrix(self, trial_idx: int|None=None)->np.ndarray:
+        """
+        Obtain the covariance matrix
+        C_{i,j} = E[X_i X_j] - E[X_i]E[X_j]
+        Args:
+            trial_idx (int | None, optional): specify trial for which calculated. 
+            Defaults to None which returns covariance matrix accross all trials.
+
+        Returns: 
+            np.ndarray: shape (neuron_count, neuron_count) which is the covariance matrix
+        """
+
+        if trial_idx is not None:
             data = self.observation[trial_idx, :, :]
             return np.cov(data, rowvar=False)
         reshaped_observations = self.observation.reshape(self.trial_cnt*self.timestep_cnt, self.neuron_cnt)
         return np.cov(reshaped_observations,rowvar=False)
+    
+    def get_correlation_matrix(self)->np.ndarray:
+        """
+        Obtain the correlation matrix
+
+        Returns:
+            np.ndarray: (neural_cnt, neural_cnt) correlation matrix
+        """
+        flattened = self.observation.reshape(-1, self.neuron_cnt)
+        corr = np.corrcoef(flattened, rowvar=False)
+        return corr
     
     
     ### ---------------------------------------------------------------------------------------------------- ###
@@ -263,9 +556,13 @@ class Illustrator:
 
     def get_SVD(self):
         """
-        Return U, S, V
+        Obtain the SVD of the dataset
+
+        Returns:
+           SVD result from numpy
+           U, S, Vh
         """
-        reshaped_data = self.observation.reshape(-1, self.neuron_cnt)
+        
         Y = self.observation.reshape(-1, self.neuron_cnt)
 
         # Center data
@@ -275,18 +572,33 @@ class Illustrator:
         SVD = np.linalg.svd(Y_centered, full_matrices=False)
         return SVD
     
-    def analyze_SVD(self, SVD=None, threshold: float=0.9):
-        if not SVD: 
+    def get_PCA(self, SVD:Tuple[np.ndarray, np.ndarray, np.ndarray]|None=None, 
+                threshold: float=0.9)->Tuple[np.ndarray, np.ndarray, int, np.ndarray, np.ndarray]:
+        """
+        Obtain Principal Components
+
+        Args:
+            SVD (Tuple[np.ndarray, np.ndarray, np.ndarray] | None, optional): 
+            SVD =  (U, S, Vh)
+            Defaults to None. If None, function calculates PCA
+            threshold (float, optional): Threshold to . Defaults to 0.9.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray, int, np.ndarray, np.ndarray]:
+            explained, variance, cumulative variance, components needed, principal vectors, scores (activations of reduced eigen vectors)
+        """
+        if SVD is None: 
            SVD = self.get_SVD()
 
         U, S, Vh = SVD
         explained_variance = S**2 / np.sum(S**2)
         cumulative_variance = np.cumsum(explained_variance)
-        components_needed = np.where(np.cumsum(cumulative_variance)>0.9)[0][0]
+        components_needed = np.where(cumulative_variance>threshold)[0][0] + 1
         V = Vh.T
-        principal_vectors = V[:,components_needed]
+        principal_vectors = V[:,:components_needed]
         principal_scores = U[:,:components_needed] @ np.diag(S[:components_needed])
-        return explained_variance, cumulative_variance, components_needed, principal_vectors, principal_scores
+        scores = principal_scores.reshape(self.trial_cnt, self.timestep_cnt, components_needed)
+        return explained_variance, cumulative_variance, components_needed, principal_vectors, scores
 
         
 
@@ -296,20 +608,32 @@ class Illustrator:
     ###----------------------------------------Time Series Analysis ---------------------------------------- ###
     ### ---------------------------------------------------------------------------------------------------- ###
     
-    def test_stationaryness(self):
+    def test_stationaryness(self, time_list: list[int]|np.ndarray|None=None)->dict[int, float]:
         """
         ADF test is used to determine the presence of unit root in the series, and hence helps in understand if the series is stationary or not. T
         he null and alternate hypothesis of this test are:
 
-        Null Hypothesis: The series has a unit root.
+        Null Hypothesis: The series has a unit root. (series non stationary)
 
-        Alternate Hypothesis: The series has no unit root.
+        Alternate Hypothesis: The series has no unit root. (series stationary)
 
         If the null hypothesis in failed to be rejected, this test may provide evidence that the series is non-stationary.
 
-        If pval < threshold =
+        If pval < threshold => Reject Null Hypothesis, and conclude time series stationary
+        (from wikipedia)
+
+        Args:
+            time_list (list[int] | np.ndarray | None, optional):
+            List of time_indices to test for stationaryness 
+            Defaults to None => see accross fullset.
+        
+        Returns:
+            dict[int, float]: dictionary mapping neuron index to p val
         """
-        time_averaged = self.get_trial_averaged_mean()
+        if time_list is None:
+            _, time_list, _ = self.default_trial_time_neuron_list()
+
+        time_averaged = self.get_trial_average()[time_list, :]
         pvals = {}
 
         for neuron_idx in range(time_averaged.shape[1]):
@@ -327,47 +651,196 @@ class Illustrator:
 
         return pvals
 
-    def get_autocovariance_matrix(self, neuron_index: int|None=None, normalized = False)->np.ndarray|dict:
-        """Use this to get the autocovariance matrix of specific neural process
-        C_{t1,t2} = E[X_t1 X_t2] - E[X_t1]E[X_t2]
-        This can help understand the temporal variance
+    def get_time_covariance_matrix(self, neuron_index: int|list|None=None, trial_index: list[int] | np.ndarray | None = None,
+                                  time_list: list[int]|np.ndarray|None=None, normalized = False)->dict[int, np.ndarray]:
         """
-        def get_cov(neuron_index):
-            individual_data = self.observation[:,:,neuron_index]
-            cov = np.cov(individual_data, rowvar=False)
-            normalizer = np.max(cov) if normalized else 1
-            return cov/normalizer
+        Work in progress and potentially has a bug
+        Compute the time–time covariance (or correlation) structure of neural activity
+        for selected neurons across trials.
 
-        if neuron_index:
-            return get_cov(neuron_index)
+        Args:
+            neuron_index (int | list | None, optional): 
+            Index or list of neuron indices to compute covariance for. 
+            Defaults to None which returns for all neurons.
+
+            trial_index (| list[int] | np.ndarray | None, optional):
+            Indices of trials to include in the computation Need trials > 2 (need atleast 2 to calculate cov) else does outer product
+            Defaults to None which implies to take accross all trials
+
+            time_list (list[int] | np.ndarray | None, optional):
+            Time indices to include in the computation.
+            Defaults to None: which implies to take accross all time steps
+            
+            normalized (bool, optional): If True, returns the correlation matrix instead of covariance,. Defaults to False.
+
+        Returns:
+            dict[int, np.ndarray]: {neuron_idx: matrix of according shape dependend on time_list}
+        """
+        default_trials, default_times, _ = self.default_trial_time_neuron_list()
+
+        if trial_index is None:
+            trial_index = default_trials
+
+        if time_list is None:
+            time_list = default_times
+        
+        trial_index = np.asarray(trial_index)
+        time_list = np.asarray(time_list)
+
+        def compute_cov(neuron: int) -> np.ndarray:
+            # Shape: (n_trials, n_times)
+            
+            data = self.observation[trial_index][:, time_list, neuron]
+
+            if data.shape[0] < 2:
+                print('Calculating Outer product')
+                x = self.observation[trial_index, time_list, neuron]
+                x = x - x.mean()
+
+                return np.outer(x, x)
+
+            cov = np.cov(data, rowvar=False)
+
+            if normalized:
+                std = np.sqrt(np.diag(cov))
+                denom = np.outer(std, std)
+                cov = cov / (denom + 1e-12)
+
+            return cov
+
+        # Single neuron
+        if isinstance(neuron_index, int):
+            return {neuron_index: compute_cov(neuron_index)}
+
+        # Multiple neurons
+        if neuron_index is None:
+            neuron_indices = range(self.neuron_cnt)
         else:
-            res = {}
-            for neuron in range(self.neuron_cnt):
-                res[neuron] = get_cov(neuron)
-            return res
+            neuron_indices = np.asarray(neuron_index)
 
-    
-    def get_autocorrelation_function(self, neuron_index:int|None=None, normalized = False):
+        return {int(neuron): compute_cov(int(neuron)) for neuron in neuron_indices}
+
+        
+    def _get_autocorrelation_function(self, neuron_index: list|None=None, trial_index: int | list[int] | np.ndarray | None = None,
+                                  time_list: list[int]|np.ndarray|None=None, average_trials: bool=True, normalized = False)->dict[int, np.ndarray]:
         """
+        
+        Work in process to implement
+        Compute the temporal autocorrelation function for selected neurons.
         Assume WSS
-        """
-        def get_acf(neuron_index, normalized):
-            mean_activity = self.get_trial_averaged_mean(neuron_index)
-            acf = np.correlate(mean_activity, mean_activity, mode='full')
-            acf = acf[len(acf)//2:]
-            normalizer = acf[0] if normalized else 1
-            return acf/normalizer
-        if neuron_index:
-            return get_acf(neuron_index, normalized)
-        else:
-            res = {}
-            for neuron in range(self.neuron_cnt):
-                res[neuron] = get_acf(neuron, normalized)
-            return res
 
-    def get_cross_autocorrelation_function(self, neuron1, neuron2, normalized=False):
-        activity1 = self.get_trial_averaged_mean(neuron1)
-        activity2 = self.get_trial_averaged_mean(neuron2)
+        The autocorrelation is computed WITHIN each trial over time,
+        then optionally averaged across trials.
+
+        For a signal x(t):
+
+            R(tau) = E[x(t) x(t + tau)]
+
+        Parameters
+        ----------
+        neuron_index : list[int] | np.ndarray | None
+            Neuron(s) to compute autocorrelation for.
+            None => all neurons.
+
+        trial_index : int | list[int] | np.ndarray | None
+            Trials to include.
+            None => all trials.
+
+        time_list : list[int] | np.ndarray | None
+            Time indices to include.
+            None => all timesteps.
+
+        normalized : bool
+            If True, normalize such that:
+                R(0) = 1
+
+        average_trials : bool
+            If True:
+                compute autocorrelation per trial,
+                then average across trials.
+
+            If False:
+                return stacked trial autocorrelations.
+
+        Returns
+        -------
+        dict[int, np.ndarray]
+            Dictionary mapping neuron index -> autocorrelation array
+
+            Shape if average_trials=True:
+                (n_lags,)
+
+            Shape if average_trials=False:
+                (n_trials, n_lags)
+
+        """
+        
+        default_trials, default_times, _ = self.default_trial_time_neuron_list()
+        if trial_index is None:
+            trial_index = default_trials
+
+        if time_list is None:
+            time_list = default_times
+        
+        trial_index = np.asarray(trial_index)
+        time_list = np.asarray(time_list)
+
+
+        def compute_autocorr(x) -> np.ndarray:
+            """
+            Compute autocorrelation of 1D signal.
+            """
+            
+            # remove mean
+            x = x - np.mean(x)
+
+            # full autocorrelation
+            acorr = np.correlate(x, x, mode="full")
+
+            # keep nonnegative lags only
+            acorr = acorr[acorr.size // 2:]
+
+            # normalize
+            if normalized and acorr[0] > 1e-12:
+                acorr = acorr / acorr[0]
+
+            return acorr
+        
+        if isinstance(neuron_index, int):
+            return {neuron_index: compute_autocorr(neuron_index)}
+
+        results = {}
+        # Multiple neurons
+        if neuron_index is None:
+            neuron_indices = range(self.neuron_cnt)
+        else:
+            neuron_indices = np.asarray(neuron_index)
+
+        for neuron in neuron_indices:
+
+            trial_autocorrs = []
+
+            for trial in trial_index:
+
+                signal = self.observation[trial][time_list, neuron]
+
+                acorr = compute_autocorr(signal)
+
+                trial_autocorrs.append(acorr)
+
+            trial_autocorrs = np.asarray(trial_autocorrs)
+
+            if average_trials:
+                results[int(neuron)] = np.mean(trial_autocorrs, axis=0)
+            else:
+                results[int(neuron)] = trial_autocorrs
+
+        return results
+
+    def _get_cross_autocorrelation_function(self, neuron1, neuron2, normalized=False):
+        """ Work in process to implement"""
+        activity1 = self.get_trial_average(neuron1)
+        activity2 = self.get_trial_average(neuron2)
         ccf = np.correlate(activity1, activity2, mode='full')
         normalizer = np.max(ccf) if normalized else 1
         return ccf/normalizer
@@ -471,18 +944,95 @@ class Illustrator:
     ###----------------------------------------Plotting Functions  ----------------------------------------- ###
     ### ---------------------------------------------------------------------------------------------------- ###
 
-    def plot_neural_activity_histogram(self, neuron_idx, bins = 10, two_dim=True):
-        """
-        2-dim for time, activity histogram
-        1-dim for all
-        """
-        if two_dim:
-            values = self.observation[:,:, neuron_idx]
-            plt.hist2d(values[0], values[1])
+    def plot_general(
+            self,
+            neuron_list: np.ndarray|None = None,
+            time_list: np.ndarray|None = None,
+            trial_list: np.ndarray|None = None,
+
+            ):
+
+            default_trial_time_neuron_lists = self.default_trial_time_neuron_list()
+
+            if neuron_list is None:
+                neuron_list = default_trial_time_neuron_lists[2]
+            if time_list is None:
+                time_list = default_trial_time_neuron_lists[1]
+            if trial_list is None:
+                trial_list = default_trial_time_neuron_lists[0]
+            #given the lists are not None
+            if neuron_list is not None:
+                if max(neuron_list) >= self.neuron_cnt or min(neuron_list) < 0:
+                    raise ValueError("neuron_list contains invalid neuron indices.")
+            if time_list is not None:
+                if max(time_list) >= self.timestep_cnt or min(time_list) < 0:
+                    raise ValueError("time_list contains invalid time indices.")
+            if trial_list is not None:
+                if max(trial_list) >= self.trial_cnt or min(trial_list) < 0:
+                    raise ValueError("trial_list contains invalid trial indices.")
+
+            plt.figure(figsize=(10, 6))
+            if (neuron_list is not None) and (trial_list is not None) and (time_list is not None):
+                for trial in trial_list:
+                    for neuron in neuron_list:
+                        plt.plot(time_list, self.observation[trial, time_list, neuron], label=f"Trial {trial}, Neuron {neuron}", alpha=0.6)
+            else:
+                raise ValueError("At least one of neuron_list, time_list, or trial_list must be provided.")
+
+            plt.xlabel("Time step")
+            plt.ylabel("Observed activity")
+            plt.title("Scatter plot of selected neurons over time, accross trials {}".format(trial_list))
+            plt.grid(alpha=0.3)
             plt.show()
+
+     
+    
+    def plot_neural_activity_histogram(self, neuron_idx, bins=10, two_dim=True):
+        """
+        Visualize distribution of neural activity.
+
+        Parameters
+        ----------
+        neuron_idx : int
+            Index of neuron.
+        bins : int
+            Number of histogram bins.
+        two_dim : bool
+            If True, shows time vs activity distribution across all trials.
+            If False, shows global activity distribution.
+        """
+
+        values = self.observation[:, :, neuron_idx]
+
+        if two_dim:
+            # flatten trials into samples of (time, activity)
+            t = np.tile(np.arange(values.shape[1]), values.shape[0])
+            x = values.flatten()
+
+            plt.figure(figsize=(8, 5))
+
+            hist = plt.hist2d(t, x, bins=bins, cmap="viridis")
+
+            # add colorbar
+            plt.colorbar(hist[3], label="Count")
+
+            plt.xlabel("Time")
+            plt.ylabel("Activity")
+            plt.title(f"Neuron {neuron_idx} activity over time")
+
+            plt.tight_layout()
+            plt.show()
+
         else:
-            values = self.observation[:,:, neuron_idx].flatten()
-            plt.hist(values)
+            plt.figure(figsize=(6, 4))
+
+            plt.hist(values.flatten(), bins=bins)
+
+            plt.xlabel("Activity")
+            plt.ylabel("Count")
+            plt.title(f"Neuron {neuron_idx} activity distribution")
+
+            plt.tight_layout()
             plt.show()
     
     def plot_trial_average(self):
@@ -581,52 +1131,137 @@ class Illustrator:
         print(f"Mean trial std for neuron {neuron_id}: {np.mean(std_signal):.6f}")
         print(f"Max trial std for neuron {neuron_id}: {np.max(std_signal):.6f}")
     
-    def plot_PSD(
-            self, 
-            neuron_list: np.ndarray|None = None,
-            time_list: np.ndarray|None = None,
-            trial_list: np.ndarray|None = None
-            ):
-        '''
-        plot PSD
-        
-        '''
-        if (neuron_list is not None) and (trial_list is not None) and (time_list is not None):
-            psd_results = self.get_PSD(neuron_list, time_list, trial_list)
-        else:
-            default_trial_time_neuron_lists = self.default_trial_time_neuron_list()
-            psd_results = self.get_PSD(default_trial_time_neuron_lists[2], default_trial_time_neuron_lists[1], default_trial_time_neuron_lists[0]) 
-        
+    def plot_neuron_variance(self):
+        """
+        Plot the variance of each neuron/signal across trials and time.
 
-        plt.figure(figsize=(10, 6))
-        for neuron, psd_list in psd_results.items():
-            for trial_idx, (freqs, psd) in enumerate(psd_list):
-                plt.plot(freqs, psd, label=f"Neuron {neuron}, Trial {trial_idx}", alpha=0.6)
+        A higher variance may suggest that a neuron/signal carries more visible dynamics.
+        """
+        neuron_variance = np.var(self.observation, axis=(0, 1))
 
-        plt.xlabel("Frequency (Hz)")
-        plt.ylabel("Power Spectral Density")
-        plt.title("Power Spectral Density of neurons {0} accross concatenated trial data from trials {1}".format(neuron_list, trial_list))
-        plt.legend()
-        plt.grid(alpha=0.3)
+        plt.figure(figsize=(8, 4))
+        plt.bar(np.arange(self.neuron_cnt), neuron_variance)
+        plt.xlabel("Neuron / signal index")
+        plt.ylabel("Variance")
+        plt.title("Variance of each neuron/signal")
+        plt.grid(axis="y", alpha=0.3)
         plt.show()
+
     
-    def plot_fft(self, neuron_idx: int|None=None):
-        fft_res = self.get_fft(neuron_idx)
-        fig, ax = plt.subplots(2, figsize=(10,6))
-        for neuron, fft_vals in fft_res.items():
-            vals, freqs = fft_vals
-            ax[0].plot(freqs, np.abs(vals), label=f'Neuron {neuron}', alpha=0.6)
-            ax[1].plot(freqs, np.angle(vals), label=f'Neuron {neuron}', alpha=0.6)
+    def plot_neuron_mean_activity(self):
+        """
+        Plot the mean activity of each neuron across all trials and timepoints.
+        """
+        mean_per_neuron = np.mean(self.observation, axis=(0, 1))
 
-        ax[0].set_title('Gain of FFT')
-        ax[1].set_title('Phase of FFT')
+        plt.figure(figsize=(8, 4))
+        plt.bar(np.arange(self.neuron_cnt), mean_per_neuron)
+        plt.xlabel("Neuron / signal index")
+        plt.ylabel("Mean activity")
+        plt.title("Mean activity of each neuron/signal")
+        plt.grid(axis="y", alpha=0.3)
+        plt.show()    
+    
+    
+    def plot_spectrum(self,neuron_list=None,time_list=None,trial_list=None,spectrum: str = "fft",**kwargs
+    ):
+        """
+        Plot spectral representations of neural activity.
 
-        ax[0].set_xlabel('Frequency')
-        ax[1].set_xlabel('Frequency')
+        Args
+        ----------
+        neuron_list : list[int] | np.ndarray | int | None
+            Neurons to analyze. If None, uses all neurons.
+        time_list : list[int] | np.ndarray | None
+            Time indices to include. If None, uses all timesteps.
+        trial_list : list[int] | np.ndarray | int | None
+            Trials to include. If None, uses all trials.
+        spectrum : str
+            Type of spectral analysis. One of:
+            - "fft"
+            - "psd"
+            - "spectrogram"
+        **kwargs :
+            Additional plotting / computation parameters:
+            - dt (float): sampling interval (default = 1.0)
+            - log_psd (bool): log-scale PSD plot
+            - show (bool): whether to call plt.show() (default True)
+            - figsize (tuple): matplotlib figure size
+        """
 
-        ax[0].legend()
-        ax[1].legend()
-        plt.show()
+        import matplotlib.pyplot as plt
+
+        spectrum = spectrum.lower().strip()
+        valid_spectrums = ["fft", "psd", "spectrogram", "coherence"]
+
+        if spectrum not in valid_spectrums:
+            raise ValueError(f"Unknown spectrum type '{spectrum}'. Choose from {valid_spectrums}.")
+
+        # ---------------- defaults ----------------
+        dt = kwargs.get("dt", 1.0)
+        show = kwargs.get("show", True)
+        log_psd = kwargs.get("log_psd", False)
+        figsize = kwargs.get("figsize", None)
+
+        neuron_list = np.arange(self.neuron_cnt) if neuron_list is None else neuron_list
+        time_list = np.arange(self.timestep_cnt) if time_list is None else time_list
+        trial_list = np.arange(self.trial_cnt) if trial_list is None else trial_list
+
+        if isinstance(neuron_list, (int, np.integer)):
+            neuron_list = [int(neuron_list)]
+        if isinstance(trial_list, (int, np.integer)):
+            trial_list = [int(trial_list)]
+
+        # ---------------- FFT ----------------
+        if spectrum == "fft":
+            results = self.get_fft(neuron_list, time_list, trial_list, dt=dt)
+
+
+            for neuron, (freqs, spec) in results.items():
+                freqs = np.fft.fftshift(freqs)
+                spectrum = np.fft.fftshift(spec)
+
+                plt.figure(figsize=figsize)
+                plt.plot(freqs, np.abs(spectrum))
+                plt.title(f"Neuron {neuron} FFT Magnitude")
+                plt.xlabel("Frequency")
+                plt.ylabel("|FFT|")
+                if show:
+                    plt.show()
+
+        # ---------------- PSD ----------------
+        elif spectrum == "psd":
+            results = self.get_PSD(neuron_list, time_list, trial_list, dt=dt)
+
+            for neuron, (freqs, psd) in results.items():
+                plt.figure(figsize=figsize)
+
+                if log_psd:
+                    plt.semilogy(freqs, psd)
+                else:
+                    plt.plot(freqs, psd)
+
+                plt.title(f"Neuron {neuron} PSD")
+                plt.xlabel("Frequency")
+                plt.ylabel("Power")
+                if show:
+                    plt.show()
+
+        # ---------------- SPECTROGRAM ----------------
+        elif spectrum == "spectrogram":
+            results = self.get_spectrogram(neuron_list, time_list, trial_list, dt=dt)
+
+            for neuron, (f, t, Sxx) in results.items():
+                plt.figure(figsize=figsize)
+                plt.pcolormesh(t, f, Sxx, shading="auto")
+                plt.title(f"Neuron {neuron} Spectrogram")
+                plt.xlabel("Time")
+                plt.ylabel("Frequency")
+                plt.colorbar(label="Power")
+                if show:
+                    plt.show()
+
+    
     
     def plot_matrix(self, matrix: np.ndarray, title: str = "Matrix Plot", 
                     color_coded: bool = True, show_numbers: bool = False, cmap: str = 'bwr'):
@@ -689,6 +1324,83 @@ class Illustrator:
         ax.set_ylabel("Rows (Source / Input Index)")
         
         plt.grid(False) # Prevent gridlines from crossing inside pixels
+        plt.tight_layout()
+        plt.show()
+
+    def plot_scree(self, horizon: int = 4):
+        """
+        Computes and plots a Scree Plot of the singular values from the 
+        SSID projection matrix. This visualizes the 'energy' of each dimension
+        to help determine the optimal hidden state_dim (the "elbow" method).
+        
+        Parameters
+        ----------
+        horizon : int
+            The number of time steps used for the past/future data blocks.
+            Should match the horizon you intend to use in estimate_ssid_matrices.
+        """
+        # 1. Flatten and center data
+        total_timepoints = self.trial_cnt * self.timestep_cnt
+        y_flat = self.observation.reshape(total_timepoints, self.neuron_cnt)
+        y_centered = y_flat - np.mean(y_flat, axis=0)
+        
+        N = total_timepoints - 2 * horizon + 1
+        if N <= 0:
+            raise ValueError("Observation timeline is too short for this horizon.")
+            
+        # 2. Reconstruct the block Hankel rows
+        H = np.zeros((2 * horizon * self.neuron_cnt, N))
+        for i in range(2 * horizon):
+            H[i * self.neuron_cnt : (i + 1) * self.neuron_cnt, :] = y_centered[i : i + N, :].T
+            
+        Y_p = H[: horizon * self.neuron_cnt, :]
+        Y_f = H[horizon * self.neuron_cnt :, :]
+
+        # 3. Geometric Projection
+        R_ff = np.dot(Y_f, Y_p.T)
+        R_pp = np.dot(Y_p, Y_p.T) + np.eye(Y_p.shape[0]) * 1e-6
+        projection = np.dot(R_ff, la.solve(R_pp, Y_p))
+
+        # 4. Extract Singular Values (No truncation here, we want to see all of them)
+        _, Sigma, _ = la.svd(projection, full_matrices=False)
+        
+        # Calculate variance metrics for plotting
+        variance_explained = (Sigma**2) / np.sum(Sigma**2) * 100
+        cumulative_variance = np.cumsum(variance_explained)
+        num_components = len(Sigma)
+        x_ticks = np.arange(1, num_components + 1)
+
+        # 5. Plotting a dual-axis Scree/Manifold chart
+        fig, ax1 = plt.subplots(figsize=(9, 5))
+
+        # Left Axis: Individual Singular Values
+        color = 'tab:blue'
+        ax1.set_xlabel('Component / Subspace Dimension Index', fontweight='bold')
+        ax1.set_ylabel('Singular Value Magnitude', color=color, fontweight='bold')
+        line1 = ax1.plot(x_ticks, Sigma, 'o-', color=color, linewidth=2, label='Singular Value')
+        ax1.tick_params(axis='y', labelcolor=color)
+        ax1.set_xticks(x_ticks)
+        ax1.grid(True, alpha=0.3)
+
+        # Right Axis: Cumulative Explained Variance
+        ax2 = ax1.twinx()  
+        color = 'tab:orange'
+        ax2.set_ylabel('Cumulative Variance Explained (%)', color=color, fontweight='bold')
+        line2 = ax2.plot(x_ticks, cumulative_variance, 's--', color=color, alpha=0.7, label='Cumulative Variance')
+        ax2.tick_params(axis='y', labelcolor=color)
+        ax2.set_ylim(0, 105)
+
+        # Dynamic annotations to guide selection
+        plt.title('SSID Subspace Scree Plot\n(Look for the "Elbow" where Singular Values flatten out)', fontsize=12, pad=15)
+        
+        # Add a unified legend for both axes lines
+        lines = line1 + line2
+        labels = list()
+        for l in lines:
+            labels.append(l.get_label())
+            
+        ax1.legend(lines, labels, loc='center right')
+        
         plt.tight_layout()
         plt.show()
 
