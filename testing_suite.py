@@ -18,6 +18,7 @@ from Controllers import Controllers
 
 def testing_suite():
     illustrator = Illustrator(np.load("ExampleDataset.npy"))
+    # illustrator.run_all()
 
     controller_factory = Controllers()
     controller = controller_factory.make_pulse(0,10,10,2)
