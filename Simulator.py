@@ -116,6 +116,53 @@ class Simulator:
         plt.legend()
         plt.show()
 
+    # ------------------------------------------------------------------
+    # Gramians
+    # ------------------------------------------------------------------
+
+    def finite_controllability_gramian(self, horizon=20):
+        Wc = np.zeros((self.x_dimensions, self.x_dimensions))
+        A_power = np.eye(self.x_dimensions)
+        for _ in range(horizon):
+            Wc += A_power @ self.B @ self.B.T @ A_power.T
+            A_power = A_power @ self.A
+        return Wc
+
+    def finite_observability_gramian(self, horizon=20):
+        Wo = np.zeros((self.x_dimensions, self.x_dimensions))
+        A_power = np.eye(self.x_dimensions)
+        for _ in range(horizon):
+            Wo += A_power.T @ self.C.T @ self.C @ A_power
+            A_power = A_power @ self.A
+        return Wo
+
+    def gramian_summary(self, horizon=20):
+        Wc = self.finite_controllability_gramian(horizon)
+        Wo = self.finite_observability_gramian(horizon)
+        eig_Wc = np.linalg.eigvalsh(Wc)
+        eig_Wo = np.linalg.eigvalsh(Wo)
+        return {
+            "Wc": Wc, "Wo": Wo,
+            "eig_Wc": eig_Wc, "eig_Wo": eig_Wo,
+            "min_eig_Wc": np.min(eig_Wc), "max_eig_Wc": np.max(eig_Wc),
+            "min_eig_Wo": np.min(eig_Wo), "max_eig_Wo": np.max(eig_Wo),
+        }
+
+    def plot_gramians(self, horizon=20):
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        for ax, M, title in zip(
+            axes,
+            [self.finite_controllability_gramian(horizon),
+             self.finite_observability_gramian(horizon)],
+            [f"Controllability Gramian (h={horizon})",
+             f"Observability Gramian (h={horizon})"],
+        ):
+            im = ax.imshow(M, aspect="auto")
+            fig.colorbar(im, ax=ax)
+            ax.set_title(title)
+        fig.tight_layout()
+        plt.show()
+
     def input_pulse(self,
                     time:int,
                     data:np.ndarray,
@@ -233,14 +280,10 @@ class Simulator:
         controls = tk.Frame(root)
         controls.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=8)
 
-        fig = Figure(figsize=(7, 8))
-        ax_obs   = fig.add_subplot(311)
-        ax_input = fig.add_subplot(312, sharex=ax_obs)
-        ax_state = fig.add_subplot(313, sharex=ax_obs)
+        fig = Figure(figsize=(7, 4))
+        ax_obs = fig.add_subplot(111)
         ax_obs.set_ylabel("activation")
-        ax_input.set_ylabel("input")
-        ax_state.set_ylabel("latent state")
-        ax_state.set_xlabel("time")
+        ax_obs.set_xlabel("time")
         fig.tight_layout()
         canvas = FigureCanvasTkAgg(fig, master=root)
         canvas.get_tk_widget().pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
@@ -282,34 +325,70 @@ class Simulator:
         plot_ctrl.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=8)
         tk.Label(plot_ctrl, text="plot controls", font=("", 9, "bold")).pack(anchor="w", pady=(0, 4))
 
-        show_real_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(plot_ctrl, text="show real data", variable=show_real_var,
-                    command=lambda: redraw()).pack(anchor="w")
+        import matplotlib.cm as _cm
+        _N_COLORS = 20
+        NEURON_COLORS = [_cm.tab20(i / _N_COLORS) for i in range(_N_COLORS)]
 
-        neuron_frame = tk.LabelFrame(plot_ctrl, text="neurons", padx=4, pady=2)
-        neuron_frame.pack(fill=tk.X, pady=(8, 4))
-        neuron_vars = {}   # {neuron_index: BooleanVar}
+        def _hex(c):
+            return "#{:02x}{:02x}{:02x}".format(int(c[0]*255), int(c[1]*255), int(c[2]*255))
+
+        # --- neuron toggles (scrollable, split real / sim) ---
+        neuron_outer = tk.LabelFrame(plot_ctrl, text="neurons", padx=4, pady=2)
+        neuron_outer.pack(fill=tk.X, pady=(8, 4))
+
+        n_scroll = tk.Canvas(neuron_outer, width=120, height=220, highlightthickness=0)
+        n_sb = tk.Scrollbar(neuron_outer, orient="vertical", command=n_scroll.yview)
+        n_scroll.configure(yscrollcommand=n_sb.set)
+        n_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        n_scroll.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        n_inner = tk.Frame(n_scroll)
+        n_scroll.create_window((0, 0), window=n_inner, anchor="nw")
+        n_inner.bind("<Configure>", lambda e: n_scroll.configure(scrollregion=n_scroll.bbox("all")))
+
+        real_neuron_frame = tk.LabelFrame(n_inner, text="real", padx=2, pady=2)
+        real_neuron_frame.pack(fill=tk.X, padx=2, pady=(2, 0))
+        sim_neuron_frame  = tk.LabelFrame(n_inner, text="simulated", padx=2, pady=2)
+        sim_neuron_frame.pack(fill=tk.X, padx=2, pady=(4, 2))
+
+        real_neuron_vars = {}
+        sim_neuron_vars  = {}
+
+        def _set_all_neurons(d, v):
+            for var in d.values():
+                var.set(v)
+            redraw()
 
         def build_neuron_checkboxes():
-            for child in neuron_frame.winfo_children():
+            for child in real_neuron_frame.winfo_children():
                 child.destroy()
-            neuron_vars.clear()
+            for child in sim_neuron_frame.winfo_children():
+                child.destroy()
+            real_neuron_vars.clear()
+            sim_neuron_vars.clear()
+
             n_neurons = self.observation.shape[-1]
             for i in range(n_neurons):
-                var = tk.BooleanVar(value=True)
-                neuron_vars[i] = var
-                tk.Checkbutton(neuron_frame, text=f"neuron {i}", variable=var,
-                            command=lambda: redraw()).pack(anchor="w")
+                col = _hex(NEURON_COLORS[i % _N_COLORS])
+                rv = tk.BooleanVar(value=True)
+                real_neuron_vars[i] = rv
+                tk.Checkbutton(real_neuron_frame, text=f"n{i}", variable=rv,
+                               fg=col, selectcolor="black",
+                               command=lambda: redraw()).grid(row=i // 2, column=i % 2, sticky="w")
+                sv = tk.BooleanVar(value=True)
+                sim_neuron_vars[i] = sv
+                tk.Checkbutton(sim_neuron_frame, text=f"n{i}", variable=sv,
+                               fg=col, selectcolor="black",
+                               command=lambda: redraw()).grid(row=i // 2, column=i % 2, sticky="w")
 
-            # quick toggles
-            btns = tk.Frame(plot_ctrl)
-            btns.pack(fill=tk.X, pady=(4, 0))
-            def set_all(v):
-                for var in neuron_vars.values():
-                    var.set(v)
-                redraw()
-            tk.Button(btns, text="all",  command=lambda: set_all(True)).pack(side=tk.LEFT, expand=True, fill=tk.X)
-            tk.Button(btns, text="none", command=lambda: set_all(False)).pack(side=tk.LEFT, expand=True, fill=tk.X)
+            r_btns = tk.Frame(n_inner)
+            r_btns.pack(fill=tk.X, padx=2, pady=(0, 1))
+            tk.Button(r_btns, text="r:all",  command=lambda: _set_all_neurons(real_neuron_vars, True )).pack(side=tk.LEFT, expand=True, fill=tk.X)
+            tk.Button(r_btns, text="r:none", command=lambda: _set_all_neurons(real_neuron_vars, False)).pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+            s_btns = tk.Frame(n_inner)
+            s_btns.pack(fill=tk.X, padx=2, pady=(0, 2))
+            tk.Button(s_btns, text="s:all",  command=lambda: _set_all_neurons(sim_neuron_vars, True )).pack(side=tk.LEFT, expand=True, fill=tk.X)
+            tk.Button(s_btns, text="s:none", command=lambda: _set_all_neurons(sim_neuron_vars, False)).pack(side=tk.LEFT, expand=True, fill=tk.X)
 
         build_neuron_checkboxes()
 
@@ -509,6 +588,9 @@ class Simulator:
                 except Exception as e:
                     spectra_labels[name].config(text=f"err: {e}")
 
+        # last sim data — shared with input/state popup windows
+        _last = {"t": None, "sim": None, "states": None, "input_fn": None}
+
         # --- read / redraw (modified to use build_input) ---
         def read(name):
             return np.array([[float(e.get()) for e in row] for row in entries[name]])
@@ -530,46 +612,80 @@ class Simulator:
             except Exception as e:
                 status.config(text=f"sim error: {e}"); return
 
-            for ax in (ax_obs, ax_input, ax_state):
-                ax.clear()
+            ax_obs.clear()
 
             t = np.arange(sim.shape[0])
             real = self.observation[0]
 
-            # observations
-            selected = [i for i, v in neuron_vars.items() if v.get()]
-            for n in selected:
-                if show_real_var.get() and n < real.shape[1]:
-                    ax_obs.plot(t, real[:, n], label=f"real {n}", alpha=0.6)
-                if n < sim.shape[1]:
-                    ax_obs.plot(t, sim[:, n], label=f"sim {n}", linestyle="--")
-            if selected:
+            # store for popup windows
+            _last["t"] = t
+            _last["sim"] = sim
+            _last["states"] = states
+            _last["input_fn"] = input_fn
+
+            # observations — colour fixed by neuron index, not plot order
+            any_obs = False
+            for n, v in real_neuron_vars.items():
+                if v.get() and n < real.shape[1]:
+                    ax_obs.plot(t, real[:, n], color=NEURON_COLORS[n % _N_COLORS],
+                                alpha=0.6, label=f"real {n}")
+                    any_obs = True
+            for n, v in sim_neuron_vars.items():
+                if v.get() and n < sim.shape[1]:
+                    ax_obs.plot(t, sim[:, n], color=NEURON_COLORS[n % _N_COLORS],
+                                linestyle="--", label=f"sim {n}")
+                    any_obs = True
+            if any_obs:
                 ax_obs.legend(fontsize=8, loc="upper right")
 
-            # inputs
-            selected_in = [i for i, v in input_vars.items() if v.get()]
-            if selected_in:
-                u_trace = np.array([input_fn(ti, []) for ti in t])
-                for i in selected_in:
-                    ax_input.plot(t, u_trace[:, i], label=f"u_{i}")
-                ax_input.legend(fontsize=8, loc="upper right")
-
-            # states
-            selected_st = [i for i, v in state_vars.items() if v.get()]
-            for i in selected_st:
-                ax_state.plot(t, states[:, i], label=f"x_{i}")
-            if selected_st:
-                ax_state.legend(fontsize=8, loc="upper right")
-
             ax_obs.set_ylabel("activation")
-            ax_input.set_ylabel("input")
-            ax_state.set_ylabel("latent state")
-            ax_state.set_xlabel("time")
+            ax_obs.set_xlabel("time")
             fig.tight_layout()
             canvas.draw()
             update_spectra()
             status.config(text="ok")
                         
+        def open_input_window():
+            if _last["t"] is None:
+                return
+            t, fn = _last["t"], _last["input_fn"]
+            win = tk.Toplevel(root)
+            win.title("Input u(t)")
+            f = Figure(figsize=(7, 3))
+            ax = f.add_subplot(111)
+            u_trace = np.array([fn(ti, []) for ti in t])
+            selected_in = [i for i, v in input_vars.items() if v.get()]
+            for i in selected_in:
+                ax.plot(t, u_trace[:, i], label=f"u_{i}")
+            if selected_in:
+                ax.legend(fontsize=8)
+            ax.set_ylabel("input")
+            ax.set_xlabel("time")
+            f.tight_layout()
+            c = FigureCanvasTkAgg(f, master=win)
+            c.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            c.draw()
+
+        def open_state_window():
+            if _last["t"] is None:
+                return
+            t, states = _last["t"], _last["states"]
+            win = tk.Toplevel(root)
+            win.title("Latent states x(t)")
+            f = Figure(figsize=(7, 3))
+            ax = f.add_subplot(111)
+            selected_st = [i for i, v in state_vars.items() if v.get()]
+            for i in selected_st:
+                ax.plot(t, states[:, i], label=f"x_{i}")
+            if selected_st:
+                ax.legend(fontsize=8)
+            ax.set_ylabel("latent state")
+            ax.set_xlabel("time")
+            f.tight_layout()
+            c = FigureCanvasTkAgg(f, master=win)
+            c.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            c.draw()
+
         def save_csv():
             import os, csv, datetime
 
@@ -617,7 +733,11 @@ class Simulator:
             status.config(text=f"saved {fname}")
 
         tk.Button(spectra, text="Update (or hit Return)", command=redraw).pack(fill=tk.X, pady=(12, 4))
+        tk.Button(spectra, text="Show inputs",  command=open_input_window).pack(fill=tk.X, pady=2)
+        tk.Button(spectra, text="Show states",  command=open_state_window).pack(fill=tk.X, pady=2)
         tk.Button(spectra, text="Save trial to CSV",      command=save_csv).pack(fill=tk.X, pady=4)
+        tk.Button(spectra, text="Plot Gramians",
+                command=lambda: self.plot_gramians()).pack(fill=tk.X, pady=4)
         tk.Button(spectra, text="Open comparison window",
                 command=lambda: self._open_comparison_window()).pack(fill=tk.X, pady=4)
         status = tk.Label(spectra, text="", fg="gray", wraplength=240, justify="left")
