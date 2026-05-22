@@ -1,5 +1,6 @@
 from cProfile import label
 
+
 from Illustrator import Illustrator
 import numpy as np
 import scipy.linalg as la
@@ -8,6 +9,8 @@ rng = np.random.default_rng()
 from typing import Callable
 from Controllers import Controllers
 from PEM_framework import PEM_Framework
+from LDSParams import LDSParams
+
 
 class Simulator:
 
@@ -16,20 +19,34 @@ class Simulator:
     Initialise with list or matrix parameters: A,B,C,Q,R
     """
 
-    def __init__(self,parameters,illustrator: Illustrator,controller):
+    def __init__(self,parameters:LDSParams|None,illustrator: Illustrator,controller:Controllers):
         """
         Initialize the Model with set Parameters
         Accepts a 3D numpy array of shape (A,B,C,Q,R,mu_0,P_0) and stores it for data generation
         Parameters:
             parameters (np.ndarray): 3D numpy array of shape (A,B,C,Q,R,mu_0,P_0)  - these need to be correct else will throw error
         """
-        self.A = parameters.A    # using the dataclass
-        self.B = parameters.B
-        self.C = parameters.C
-        self.Q = parameters.Q
-        self.R = parameters.R
-        self.mu_0 = parameters.mu_0
-        self.P_0 = parameters.P_0
+        # if controller is None:
+        #     defaul
+        #     self.controller = Controllers
+        
+
+        if parameters is not None:
+            self.A = parameters.A    # using the dataclass
+            self.B = parameters.B
+            self.C = parameters.C
+            self.Q = parameters.Q
+            self.R = parameters.R
+            self.mu_0 = parameters.mu_0
+            self.P_0 = parameters.P_0
+        else:
+            self.A = np.eye(2)    # default
+            self.B = np.eye(2)
+            self.C = np.eye(2)
+            self.Q = np.eye(2)
+            self.R = np.eye(2)
+            self.mu_0 = [0,0]
+            self.P_0 = np.eye(2)
 
 
         self.x_dimensions = len(self.Q)
@@ -52,7 +69,8 @@ class Simulator:
     def _generate_trial(self,
                          length:int, #
                          seed:tuple[np.ndarray,np.ndarray], #  seed the inital hidden state value with the infered starting mean - seed should be tuple(m_0,P_0)
-                         input_function: Callable) -> np.ndarray:
+                         input_function: Callable,
+                         return_state=False):
         '''
         will return timepoint x neuron dimensional array  for a single simulated trial
         
@@ -62,21 +80,16 @@ class Simulator:
         #intial latent state
         latent_state = rng.multivariate_normal(seed[0],seed[1])
         observed_state = np.matmul(self.C,latent_state) + rng.multivariate_normal(np.zeros(self.y_dimensions),self.R)
-        data = [observed_state]
+        data, states = [observed_state], [latent_state]
         for time in range(length-1):
             latent_state = np.matmul(self.A,latent_state) + np.matmul(self.B,input_function(time,data))+ rng.multivariate_normal(np.zeros(self.x_dimensions),self.Q)
             observed_state = np.matmul(self.C,latent_state) + rng.multivariate_normal(np.zeros(self.y_dimensions),self.R)
             data.append(observed_state)
-            
-        # print(data)
-
-        # print(type(data))
+            states.append(latent_state)
         data = np.asarray(data)
-        # print(data)
-
-        # print(type(data))
-
-        return data
+        states = np.asarray(states)
+            
+        return (data, states) if return_state else data
     
     def compare_plot(self,seed):
         '''
@@ -103,6 +116,53 @@ class Simulator:
         plt.legend()
         plt.show()
 
+    # ------------------------------------------------------------------
+    # Gramians
+    # ------------------------------------------------------------------
+
+    def finite_controllability_gramian(self, horizon=20):
+        Wc = np.zeros((self.x_dimensions, self.x_dimensions))
+        A_power = np.eye(self.x_dimensions)
+        for _ in range(horizon):
+            Wc += A_power @ self.B @ self.B.T @ A_power.T
+            A_power = A_power @ self.A
+        return Wc
+
+    def finite_observability_gramian(self, horizon=20):
+        Wo = np.zeros((self.x_dimensions, self.x_dimensions))
+        A_power = np.eye(self.x_dimensions)
+        for _ in range(horizon):
+            Wo += A_power.T @ self.C.T @ self.C @ A_power
+            A_power = A_power @ self.A
+        return Wo
+
+    def gramian_summary(self, horizon=20):
+        Wc = self.finite_controllability_gramian(horizon)
+        Wo = self.finite_observability_gramian(horizon)
+        eig_Wc = np.linalg.eigvalsh(Wc)
+        eig_Wo = np.linalg.eigvalsh(Wo)
+        return {
+            "Wc": Wc, "Wo": Wo,
+            "eig_Wc": eig_Wc, "eig_Wo": eig_Wo,
+            "min_eig_Wc": np.min(eig_Wc), "max_eig_Wc": np.max(eig_Wc),
+            "min_eig_Wo": np.min(eig_Wo), "max_eig_Wo": np.max(eig_Wo),
+        }
+
+    def plot_gramians(self, horizon=20):
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        for ax, M, title in zip(
+            axes,
+            [self.finite_controllability_gramian(horizon),
+             self.finite_observability_gramian(horizon)],
+            [f"Controllability Gramian (h={horizon})",
+             f"Observability Gramian (h={horizon})"],
+        ):
+            im = ax.imshow(M, aspect="auto")
+            fig.colorbar(im, ax=ax)
+            ax.set_title(title)
+        fig.tight_layout()
+        plt.show()
+
     def input_pulse(self,
                     time:int,
                     data:np.ndarray,
@@ -115,8 +175,100 @@ class Simulator:
             return np.full(num_inputs,amplitude)
         else: 
             return np.zeros(num_inputs)
+        
+    @staticmethod
+    def load_latest_dump(folder: str = "trial_dumps"):
+        import os, pandas as pd
+
+        if not os.path.isdir(folder):
+            raise FileNotFoundError(f"folder '{folder}' does not exist — save a trial first")
+
+        files = sorted(f for f in os.listdir(folder) if f.endswith(".csv"))
+        if not files:
+            raise FileNotFoundError(f"no CSVs in {folder}")
+
+        path = os.path.join(folder, files[-1])
+
+        params = {}
+        skip = 0
+        with open(path) as f:
+            for line in f:
+                if line.startswith("#") or line.strip() == "":
+                    if line.startswith("#"):
+                        key, _, val = line.lstrip("# ").partition(":")
+                        if key.strip():
+                            params[key.strip()] = val.strip()
+                    skip += 1
+                else:
+                    break
+        params["_filename"] = files[-1]
+
+        df = pd.read_csv(path, skiprows=skip)
+        return params, df            
+
+    def _open_comparison_window(self):
+            """Pop-up window for running Illustrator methods on real and saved sim data.
+                to be used in explore
+            
+            """
+            import tkinter as tk
+            import os
+
+            # check there's actually a dump to compare against
+            if not os.path.isdir("trial_dumps") or not os.listdir("trial_dumps"):
+                print("no dumps in trial_dumps/ — click 'Save trial to CSV' first")
+                return
+
+            win = tk.Toplevel()
+            win.title("Compare real vs simulated")
+
+            tk.Label(win, text="Illustrator method:").pack(anchor="w", padx=8, pady=(8, 2))
+
+            methods = [m for m in dir(self.illustrator)
+                    if not m.startswith("_")
+                    and callable(getattr(self.illustrator, m))]
+            method_var = tk.StringVar(value=methods[0] if methods else "")
+            tk.OptionMenu(win, method_var, *methods).pack(fill=tk.X, padx=8)
+
+            info = tk.Label(win, text="", fg="gray", justify="left", anchor="w",
+                            wraplength=300)
+
+            def run_comparison():
+                method = method_var.get()
+
+                # load latest dump
+                try:
+                    params, df = Simulator.load_latest_dump()
+                except Exception as e:
+                    info.config(text=f"load err: {e}"); return
+                sim_cols = sorted(c for c in df.columns if c.startswith("sim_"))
+                sim_obs = df[sim_cols].to_numpy()[np.newaxis, ...]
+
+                # run method on real, then on sim — swap observation in/out
+                original = self.illustrator.observation
+                try:
+                    self.illustrator.observation = self.observation
+                    getattr(self.illustrator, method)()
+                    self.illustrator.observation = sim_obs
+                    getattr(self.illustrator, method)()
+                    latest = sorted(os.listdir("trial_dumps"))[-1]
+                    param_lines = "\n".join(f"  {k}: {v}" for k, v in params.items()
+                                            if k.startswith("input"))
+                    info.config(text=f"ran {method} on real and on:\n{latest}\n{param_lines}")
+                except Exception as e:
+                    info.config(text=f"viz err: {e}")
+                finally:
+                    self.illustrator.observation = original
+
+            tk.Button(win, text="Compare", command=run_comparison).pack(fill=tk.X, padx=8, pady=4)
+            info.pack(fill=tk.X, padx=8, pady=(4, 8))
+
+
     #graphics pop-up window
     def explore(self):
+
+    
+
         """Live parameter tweaking with a tkinter panel."""
         import tkinter as tk
         from matplotlib.figure import Figure
@@ -128,8 +280,11 @@ class Simulator:
         controls = tk.Frame(root)
         controls.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=8)
 
-        fig = Figure(figsize=(7, 4.5))
-        ax = fig.add_subplot(111)
+        fig = Figure(figsize=(7, 4))
+        ax_obs = fig.add_subplot(111)
+        ax_obs.set_ylabel("activation")
+        ax_obs.set_xlabel("time")
+        fig.tight_layout()
         canvas = FigureCanvasTkAgg(fig, master=root)
         canvas.get_tk_widget().pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
@@ -150,7 +305,7 @@ class Simulator:
         tk.Spinbox(dim_frame, from_=1, to=5, width=4, textvariable=u_dim_var,
                 command=lambda: resize_inputs(u_dim_var.get())).grid(row=1, column=1, padx=4)
         
-
+        #spectra block setup
         spectra = tk.Frame(root)
         spectra.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=8)
         tk.Label(spectra, text="spectra", font=("", 9, "bold")).pack(anchor="w", pady=(0, 4))
@@ -163,6 +318,111 @@ class Simulator:
                         anchor="w", width=28)
             lbl.pack(anchor="w")
             spectra_labels[name] = lbl
+
+        #neuron toggle block setup
+        # --- plot controls column ---
+        plot_ctrl = tk.Frame(root)
+        plot_ctrl.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=8)
+        tk.Label(plot_ctrl, text="plot controls", font=("", 9, "bold")).pack(anchor="w", pady=(0, 4))
+
+        import matplotlib.cm as _cm
+        _N_COLORS = 20
+        NEURON_COLORS = [_cm.tab20(i / _N_COLORS) for i in range(_N_COLORS)]
+
+        def _hex(c):
+            return "#{:02x}{:02x}{:02x}".format(int(c[0]*255), int(c[1]*255), int(c[2]*255))
+
+        # --- neuron toggles (scrollable, split real / sim) ---
+        neuron_outer = tk.LabelFrame(plot_ctrl, text="neurons", padx=4, pady=2)
+        neuron_outer.pack(fill=tk.X, pady=(8, 4))
+
+        n_scroll = tk.Canvas(neuron_outer, width=120, height=220, highlightthickness=0)
+        n_sb = tk.Scrollbar(neuron_outer, orient="vertical", command=n_scroll.yview)
+        n_scroll.configure(yscrollcommand=n_sb.set)
+        n_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        n_scroll.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        n_inner = tk.Frame(n_scroll)
+        n_scroll.create_window((0, 0), window=n_inner, anchor="nw")
+        n_inner.bind("<Configure>", lambda e: n_scroll.configure(scrollregion=n_scroll.bbox("all")))
+
+        real_neuron_frame = tk.LabelFrame(n_inner, text="real", padx=2, pady=2)
+        real_neuron_frame.pack(fill=tk.X, padx=2, pady=(2, 0))
+        sim_neuron_frame  = tk.LabelFrame(n_inner, text="simulated", padx=2, pady=2)
+        sim_neuron_frame.pack(fill=tk.X, padx=2, pady=(4, 2))
+
+        real_neuron_vars = {}
+        sim_neuron_vars  = {}
+
+        def _set_all_neurons(d, v):
+            for var in d.values():
+                var.set(v)
+            redraw()
+
+        def build_neuron_checkboxes():
+            for child in real_neuron_frame.winfo_children():
+                child.destroy()
+            for child in sim_neuron_frame.winfo_children():
+                child.destroy()
+            real_neuron_vars.clear()
+            sim_neuron_vars.clear()
+
+            n_neurons = self.observation.shape[-1]
+            for i in range(n_neurons):
+                col = _hex(NEURON_COLORS[i % _N_COLORS])
+                rv = tk.BooleanVar(value=True)
+                real_neuron_vars[i] = rv
+                tk.Checkbutton(real_neuron_frame, text=f"n{i}", variable=rv,
+                               fg=col, selectcolor="black",
+                               command=lambda: redraw()).grid(row=i // 2, column=i % 2, sticky="w")
+                sv = tk.BooleanVar(value=True)
+                sim_neuron_vars[i] = sv
+                tk.Checkbutton(sim_neuron_frame, text=f"n{i}", variable=sv,
+                               fg=col, selectcolor="black",
+                               command=lambda: redraw()).grid(row=i // 2, column=i % 2, sticky="w")
+
+            r_btns = tk.Frame(n_inner)
+            r_btns.pack(fill=tk.X, padx=2, pady=(0, 1))
+            tk.Button(r_btns, text="r:all",  command=lambda: _set_all_neurons(real_neuron_vars, True )).pack(side=tk.LEFT, expand=True, fill=tk.X)
+            tk.Button(r_btns, text="r:none", command=lambda: _set_all_neurons(real_neuron_vars, False)).pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+            s_btns = tk.Frame(n_inner)
+            s_btns.pack(fill=tk.X, padx=2, pady=(0, 2))
+            tk.Button(s_btns, text="s:all",  command=lambda: _set_all_neurons(sim_neuron_vars, True )).pack(side=tk.LEFT, expand=True, fill=tk.X)
+            tk.Button(s_btns, text="s:none", command=lambda: _set_all_neurons(sim_neuron_vars, False)).pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+        build_neuron_checkboxes()
+
+        #states and inputs checkboxes
+        input_plot_frame = tk.LabelFrame(plot_ctrl, text="inputs", padx=4, pady=2)
+        input_plot_frame.pack(fill=tk.X, pady=4)
+        input_vars = {}
+
+        state_plot_frame = tk.LabelFrame(plot_ctrl, text="states", padx=4, pady=2)
+        state_plot_frame.pack(fill=tk.X, pady=4)
+        state_vars = {}
+
+        def build_input_checkboxes():
+            for child in input_plot_frame.winfo_children():
+                child.destroy()
+            input_vars.clear()
+            for i in range(self.B.shape[1]):
+                var = tk.BooleanVar(value=True)
+                input_vars[i] = var
+                tk.Checkbutton(input_plot_frame, text=f"input {i}", variable=var,
+                            command=lambda: redraw()).pack(anchor="w")
+
+        def build_state_checkboxes():
+            for child in state_plot_frame.winfo_children():
+                child.destroy()
+            state_vars.clear()
+            for i in range(self.x_dimensions):
+                var = tk.BooleanVar(value=True)
+                state_vars[i] = var
+                tk.Checkbutton(state_plot_frame, text=f"state {i}", variable=var,
+                            command=lambda: redraw()).pack(anchor="w")
+
+        build_input_checkboxes()
+        build_state_checkboxes()
 
         # --- matrix panels (rebuild-able) ---
         panel_container = tk.Frame(controls)
@@ -224,6 +484,7 @@ class Simulator:
             self.x_dimensions = new_dim
 
             build_panels()
+            build_state_checkboxes() 
             redraw()
 
 
@@ -237,6 +498,7 @@ class Simulator:
             out[:, :c] = self.B[:, :c]
             self.B = out
             build_panels()
+            build_state_checkboxes() 
             redraw()
 
         build_panels()
@@ -326,6 +588,9 @@ class Simulator:
                 except Exception as e:
                     spectra_labels[name].config(text=f"err: {e}")
 
+        # last sim data — shared with input/state popup windows
+        _last = {"t": None, "sim": None, "states": None, "input_fn": None}
+
         # --- read / redraw (modified to use build_input) ---
         def read(name):
             return np.array([[float(e.get()) for e in row] for row in entries[name]])
@@ -340,27 +605,143 @@ class Simulator:
                 status.config(text=f"parse error: {e}"); return
 
             try:
+                sim, states = self._generate_trial(length=self.timestep_cnt,
+                                                seed=(self.mu_0, self.P_0),
+                                                input_function=input_fn,
+                                                return_state=True)
+            except Exception as e:
+                status.config(text=f"sim error: {e}"); return
+
+            ax_obs.clear()
+
+            t = np.arange(sim.shape[0])
+            real = self.observation[0]
+
+            # store for popup windows
+            _last["t"] = t
+            _last["sim"] = sim
+            _last["states"] = states
+            _last["input_fn"] = input_fn
+
+            # observations — colour fixed by neuron index, not plot order
+            any_obs = False
+            for n, v in real_neuron_vars.items():
+                if v.get() and n < real.shape[1]:
+                    ax_obs.plot(t, real[:, n], color=NEURON_COLORS[n % _N_COLORS],
+                                alpha=0.6, label=f"real {n}")
+                    any_obs = True
+            for n, v in sim_neuron_vars.items():
+                if v.get() and n < sim.shape[1]:
+                    ax_obs.plot(t, sim[:, n], color=NEURON_COLORS[n % _N_COLORS],
+                                linestyle="--", label=f"sim {n}")
+                    any_obs = True
+            if any_obs:
+                ax_obs.legend(fontsize=8, loc="upper right")
+
+            ax_obs.set_ylabel("activation")
+            ax_obs.set_xlabel("time")
+            fig.tight_layout()
+            canvas.draw()
+            update_spectra()
+            status.config(text="ok")
+                        
+        def open_input_window():
+            if _last["t"] is None:
+                return
+            t, fn = _last["t"], _last["input_fn"]
+            win = tk.Toplevel(root)
+            win.title("Input u(t)")
+            f = Figure(figsize=(7, 3))
+            ax = f.add_subplot(111)
+            u_trace = np.array([fn(ti, []) for ti in t])
+            selected_in = [i for i, v in input_vars.items() if v.get()]
+            for i in selected_in:
+                ax.plot(t, u_trace[:, i], label=f"u_{i}")
+            if selected_in:
+                ax.legend(fontsize=8)
+            ax.set_ylabel("input")
+            ax.set_xlabel("time")
+            f.tight_layout()
+            c = FigureCanvasTkAgg(f, master=win)
+            c.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            c.draw()
+
+        def open_state_window():
+            if _last["t"] is None:
+                return
+            t, states = _last["t"], _last["states"]
+            win = tk.Toplevel(root)
+            win.title("Latent states x(t)")
+            f = Figure(figsize=(7, 3))
+            ax = f.add_subplot(111)
+            selected_st = [i for i, v in state_vars.items() if v.get()]
+            for i in selected_st:
+                ax.plot(t, states[:, i], label=f"x_{i}")
+            if selected_st:
+                ax.legend(fontsize=8)
+            ax.set_ylabel("latent state")
+            ax.set_xlabel("time")
+            f.tight_layout()
+            c = FigureCanvasTkAgg(f, master=win)
+            c.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            c.draw()
+
+        def save_csv():
+            import os, csv, datetime
+
+            try:
+                input_fn = build_input()
                 sim = self._generate_trial(length=self.timestep_cnt,
                                         seed=(self.mu_0, self.P_0),
                                         input_function=input_fn)
             except Exception as e:
                 status.config(text=f"sim error: {e}"); return
 
-            ax.clear()
-            t = np.arange(sim.shape[0])
-            real = self.observation[0]
-            for n in range(sim.shape[1]):
-                ax.plot(t, real[:, n], label=f"real {n}", alpha=0.6)
-                ax.plot(t, sim[:, n],  label=f"sim {n}",  linestyle="--")
-            ax.set_xlabel("time"); ax.set_ylabel("activation")
-            ax.legend(fontsize=8)
-            canvas.draw()
-            update_spectra()
-            status.config(text="ok")
+            save_dir = "trial_dumps"
+            os.makedirs(save_dir, exist_ok=True)
 
-        tk.Button(controls, text="Update (or hit Return)", command=redraw).pack(pady=6)
-        status = tk.Label(controls, text="", fg="gray")
-        status.pack()
+            fname = f"trial_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            path = os.path.join(save_dir, fname)
+
+            real = self.observation[0]
+            T = sim.shape[0]
+            n_in = self.B.shape[1]
+
+            with open(path, "w", newline="") as f:
+                w = csv.writer(f)
+
+                # --- header: parameters as comments ---
+                w.writerow([f"# input_type: {input_type.get()}"])
+                for k, v in input_params[input_type.get()].items():
+                    w.writerow([f"# input_{k}: {v.get()}"])
+                for name in ["A", "B", "C", "Q", "R", "mu_0", "P_0"]:
+                    M = getattr(self, name)
+                    w.writerow([f"# {name}: {M.flatten().tolist()}  shape={M.shape}"])
+        
+                w.writerow([])
+
+                # --- data ---
+                y_dim = sim.shape[1]
+                w.writerow(["t"]
+                        + [f"real_{i}"  for i in range(y_dim)]
+                        + [f"sim_{i}"   for i in range(y_dim)]
+                        + [f"input_{i}" for i in range(n_in)])
+                for t in range(T):
+                    u = input_fn(t, [])
+                    w.writerow([t] + list(real[t]) + list(sim[t]) + list(u))
+
+            status.config(text=f"saved {fname}")
+
+        tk.Button(spectra, text="Update (or hit Return)", command=redraw).pack(fill=tk.X, pady=(12, 4))
+        tk.Button(spectra, text="Show inputs",  command=open_input_window).pack(fill=tk.X, pady=2)
+        tk.Button(spectra, text="Show states",  command=open_state_window).pack(fill=tk.X, pady=2)
+        tk.Button(spectra, text="Save trial to CSV",      command=save_csv).pack(fill=tk.X, pady=4)
+        tk.Button(spectra, text="Plot Gramians",
+                command=lambda: self.plot_gramians()).pack(fill=tk.X, pady=4)
+        tk.Button(spectra, text="Open comparison window",
+                command=lambda: self._open_comparison_window()).pack(fill=tk.X, pady=4)
+        status = tk.Label(spectra, text="", fg="gray", wraplength=240, justify="left")
+        status.pack(fill=tk.X, pady=(8, 0))
 
         redraw()
         root.mainloop()
