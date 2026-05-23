@@ -47,6 +47,7 @@ def testing_suite():
     sim = Simulator(params,illustrator,controller)
     seed = (mu_0,P_0)
     # sim.compare_plot(seed)
+    sim.generate_data()
     sim.explore()
 
 testing_suite()
