@@ -299,6 +299,7 @@ class Simulator2:
         observation_noise : bool
             Whether to include observation noise o_t.
 
+
         Returns
         -------
         result : dict
