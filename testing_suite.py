@@ -18,6 +18,7 @@ from Controllers import Controllers
 
 def testing_suite():
     illustrator = Illustrator(np.load("ExampleDataset.npy"))
+    # illustrator.run_all()
 
     controller_factory = Controllers()
     controller = controller_factory.make_pulse(0,10,10,2)
@@ -46,6 +47,7 @@ def testing_suite():
     sim = Simulator(params,illustrator,controller)
     seed = (mu_0,P_0)
     # sim.compare_plot(seed)
+    sim.generate_data()
     sim.explore()
 
 testing_suite()
