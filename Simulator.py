@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 rng = np.random.default_rng()
 from typing import Callable
 from Controllers import Controllers
-from PEM_framework import PEM_Framework
 from LDSParams import LDSParams
 
 
@@ -745,34 +744,3 @@ class Simulator:
 
         redraw()
         root.mainloop()
-
-
-
-
-        #default method
-
-    @classmethod
-    def default_demo(cls, dataset_path: str = "ExampleDataset.npy"):
-        """
-        One-shot entry point: loads a dataset, sets up sensible defaults,
-        runs the illustrator's full report, then opens the explorer.
-        Equivalent to the testing_suite() in the notebook.
-        """
-        illustrator = Illustrator(np.load(dataset_path))
-        illustrator.run_all()
-
-        controller = Controllers().make_pulse(0, 10, 10, 2)
-
-        params = LDSParams.from_tuple((
-            np.array([[0.01, 0   ], [0,    0.01]]),     # A
-            np.array([[0.2,  0   ], [0,    0.2 ]]),     # B
-            np.array([[0.95, 0   ], [0,    0.95]]),     # C
-            np.array([[0.95, 0   ], [0,    0.95]]),     # Q
-            np.array([[0.95, 0   ], [0,    0.95]]),     # R
-            np.array([0, 0]),                           # mu_0
-            np.array([[0.95, 0   ], [0,    0.95]]),     # P_0
-        ))
-
-        sim = cls(params, illustrator, controller)
-        sim.explore()
-        return sim
