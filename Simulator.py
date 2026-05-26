@@ -33,7 +33,7 @@ class Simulator:
         latent_state = seed
         observed_state = np.matmul(self.C,latent_state) + rng.multivariate_normal(np.zeros(self.y_dimensions),self.R)
         data = [observed_state]
-        for time in range(length):
+        for time in range(length-1):
             latent_state = np.matmul(self.A,latent_state) + np.matmul(self.B,control_function(time,data))+ rng.multivariate_normal(np.zeros(self.x_dimensions),self.Q)
             observed_state = np.matmul(self.C,latent_state) + rng.multivariate_normal(np.zeros(self.y_dimensions),self.R)
             data.append(observed_state)
