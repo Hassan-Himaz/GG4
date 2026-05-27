@@ -1,5 +1,9 @@
-from dataclasses import dataclass, astuple
+from dataclasses import dataclass, astuple,fields
 import numpy as np
+from pathlib import Path
+
+
+DEFAULT_DIR = Path.cwd() / "LDSParams_Saves"
 
 @dataclass
 class LDSParams:
@@ -24,6 +28,7 @@ class LDSParams:
             mu_0=np.asarray(params.initial.mean),
             P_0=np.asarray(params.initial.cov),
         )
+    
 
     def to_dynamax(self):
         """LDSParams -> dynamax ParamsLGSSM."""
@@ -53,6 +58,21 @@ class LDSParams:
         """
         A, B, C, Q, R, mu_0, P_0 = (np.asarray(p) for p in parameters)
         return cls(A=A, B=B, C=C, Q=Q, R=R, mu_0=mu_0, P_0=P_0)
-
+    
     def to_tuple(self):
         return astuple(self)
+
+    
+
+    def save(self, name: str = "default") -> None:
+        '''Save all matrices to ~/LDSParams_Saves/<name>.npz'''
+        DEFAULT_DIR.mkdir(exist_ok=True)
+        path = DEFAULT_DIR / f"{name}.npz"
+        np.savez(path, **{f.name: getattr(self, f.name) for f in fields(self)})
+
+    @classmethod
+    def load(cls, name: str = "default") -> "LDSParams":
+        '''Load matrices from ~/LDSParams_Saves/<name>.npz'''
+        path = DEFAULT_DIR / f"{name}.npz"
+        with np.load(path) as data:
+            return cls(**{f.name: data[f.name] for f in fields(cls)})

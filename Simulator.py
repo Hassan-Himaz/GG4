@@ -520,8 +520,14 @@ class Simulator():
 
     ##---------------------------------------------
     #--------inputs factory 
+
+    #need to be applied across input dimensions
   
     def make_pulse(self,t_on: int, t_off: int, amplitude: float, num_inputs: int) -> Callable:
+        '''
+        use to return callable pulse function
+        
+        '''
         def pulse(time: int, data: list) -> np.ndarray:
             if t_on <= time < t_off:
                 return np.full(num_inputs, amplitude)
@@ -529,11 +535,17 @@ class Simulator():
         return pulse
 
     def make_sine(self,freq: float, amplitude: float, num_inputs: int, dt: float = 1.0):
+        '''
+        use to make callable sine input
+        '''
         def sine(time, data):
             return np.full(num_inputs, amplitude * np.sin(2 * np.pi * freq * time * dt))
         return sine
 
     def make_zero(self,num_inputs: int):
+        '''
+        use to make callable zeros input
+        '''
         return lambda time, data: np.zeros(num_inputs)
     
     def make_ramp(self, t_on: int, t_off: int, slope: float, num_inputs: int) -> Callable:
@@ -545,6 +557,44 @@ class Simulator():
             return np.full(num_inputs, slope * elapsed)
         return ramp
     
+    #-------------------------------------------------------
+    #-------------array inputs----------------------------
+    #-----------------------------------------------------
+
+    # think we also may want inputs that return numpy arrays
+    def make_pulse_array(self,t_on: int, t_off: int, amplitude: float, num_inputs: int,total_signal_length:int) -> np.ndarray:
+            
+            empty_array = np.zeros((total_signal_length,num_inputs))
+            t_on = max(0,t_on)
+            t_off = min(total_signal_length,t_off)
+            if t_on < t_off:
+                empty_array[t_on:t_off,:] = amplitude
+                inputs_array = empty_array
+                return inputs_array
+            else:
+                return empty_array
+            
+
+    def make_ramp_array(self,
+                        t_on: int,
+                        t_off: int,
+                        slope: float,
+                        num_inputs: int,
+                        total_signal_length: int) -> np.ndarray:
+        '''
+        use to make array of ramp inputs across all inputs
+
+        ramp input drops back to 0 after t_off
+        
+        '''
+        u = np.zeros((total_signal_length, num_inputs))
+        t_on  = max(0, t_on)
+        t_off = min(total_signal_length, t_off)
+        if t_on < t_off:
+            steps = np.arange(t_off - t_on)            # 0, 1, 2, ...
+            u[t_on:t_off, :] = (slope * steps)[:, None]  # broadcast across inputs
+        return u
+
 
     #-----------------------------------------------------
     # -----------generating ssm matrices

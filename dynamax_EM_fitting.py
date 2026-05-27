@@ -4,7 +4,7 @@ from dynamax.linear_gaussian_ssm import LinearGaussianSSM
 from tqdm import tqdm
 import jax.numpy as jnp
 import jax.random as jr
-from typing import Tuple
+from typing import Tuple,Callable
 from LDSParams import LDSParams
 
 
@@ -57,7 +57,7 @@ class dynamax_EM_Fitting():
         print('state_dim  :  {0}'.format(self.state_dim))
 
 
-    def fit(self,u = None) ->Tuple[LDSParams, float]:
+    def fit(self,inputs :np.ndarray) ->Tuple[LDSParams, float]:
 
         '''
         params returned are of this form
@@ -77,6 +77,16 @@ class dynamax_EM_Fitting():
                 
         '''
 
+        if inputs is not None and self.model.input_dim == 0:
+            raise ValueError(
+                f"Passed inputs of shape {inputs.shape}, but model was constructed "
+                f"with input_dim=0. Reconstruct with input_dim={inputs.shape[-1]}."
+            )
+        if inputs is None and self.model.input_dim > 0:
+            raise ValueError(
+                f"Model expects input_dim={self.model.input_dim}, got inputs=None."
+            )
+
         print("obs shape:", self.observation.shape)
         print("obs range:", self.observation.min(), self.observation.max())
         print("obs std:", self.observation.std())
@@ -88,7 +98,7 @@ class dynamax_EM_Fitting():
 
                 #store observed data in emissions array
         emissions = jnp.asarray(real_data)
-        inputs = jnp.asarray(u) if u is not None else None
+        inputs_array = jnp.asarray(inputs) if inputs is not None else None
 
         best_params, best_ll = None, float("-inf")
 
@@ -103,16 +113,16 @@ class dynamax_EM_Fitting():
 
 
             
-            obs_flat = real_data.reshape(-1, self.emission_dim)
-            pca = PCA(n_components=self.state_dim).fit(obs_flat)
-            C_init = jnp.asarray(pca.components_.T)
+            # obs_flat = real_data.reshape(-1, self.emission_dim)
+            # pca = PCA(n_components=self.state_dim).fit(obs_flat)
+            # C_init = jnp.asarray(pca.components_.T)
             
-            k_perturb, k_init = jr.split(key)
-            C_init_pert = C_init + 0.05 * jr.normal(k_perturb, C_init.shape)   # (emission_dim, state_dim)
+            # k_perturb, k_init = jr.split(key)
+            # C_init_pert = C_init + 0.05 * jr.normal(k_perturb, C_init.shape)   # (emission_dim, state_dim)
 
             params, props = self.model.initialize(
                 key,
-                emission_weights=C_init,                         # 
+                # emission_weights=C_init,                         # 
                 initial_mean=jnp.zeros(self.state_dim),
                 initial_covariance=jnp.eye(self.state_dim),
             )
@@ -128,7 +138,7 @@ class dynamax_EM_Fitting():
 
             
             params, lls = self.model.fit_em(
-                params, props, emissions=emissions, inputs=inputs, num_iters=self.num_em_iters,
+                params, props, emissions=emissions, inputs=inputs_array, num_iters=self.num_em_iters,
             )
         
 

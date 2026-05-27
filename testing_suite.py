@@ -26,7 +26,7 @@ def testing_suite():
 
     # illustrator.plot_PCA()
 
-    sim = Simulator(num_hidden_states=5,num_inputs=0)
+    sim = Simulator(num_hidden_states=5,num_inputs=2)
     params = sim.generate_general_ssm_matrices()
     sim.set_params(params)
     # sim.generate_and_show()
@@ -36,7 +36,11 @@ def testing_suite():
     # summary_dict = sim.gramian_summary()
     # print(summary_dict)
 
-    latent_states, inputs = estimate_latent_and_input(simulated_data_set[0],LatentDim=5,InputDim=0,simulated_params=params)
+    latent_states, inputs = estimate_latent_and_input(simulated_data_set[0],LatentDim=5,InputDim=2,simulated_params=params)
+
+    
+
+    
     
 
     
