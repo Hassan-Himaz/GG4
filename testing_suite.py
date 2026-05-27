@@ -1,24 +1,14 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from Dynamax_EM_fitting import dynamax_EM_Fitting
+from Illustrator import Illustrator
+from Simulator import Simulator
 from Explorer import Explorer
 from Estimator import estimate_latent_and_input
 from PEM_framework import PEM_Framework
-from Illustrator import Illustrator
-from Simulator import Simulator
-from PEM_framework import PEM_Framework
 from LDSParams import LDSParams
 from typing import Callable
-
-#--------------------------------------------
-
-
-##   we want this to showcase everything that our
-
-    
-
-
-#----------------------------------------------
+from pathlib import Path
+from Dynamax_EM_fitting import Dynamax_EM_Fitting
 
 def testing_suite():
     illustrator = Illustrator(np.load("ExampleDataset.npy"))
@@ -27,21 +17,21 @@ def testing_suite():
     # illustrator.plot_PCA()
 
     sim = Simulator(num_hidden_states=5,num_inputs=2)
-    params = sim.generate_general_ssm_matrices()
+    # params = sim.generate_general_ssm_matrices()
+    save_path_sim = Path.cwd() / "LDSParams_Saves" / "run_002_sim"
+    params = LDSParams.load(save_path_sim)
     sim.set_params(params)
-    # sim.generate_and_show()
+
     simulated_data_set = sim.generate_dataset(num_trials = 5, num_timesteps=60,use_initialisation_prior=True)
-    # simulated_data_illustrator = Illustrator(data_set)
-    # simulated_data_illustrator.plot_heatmap
-    # summary_dict = sim.gramian_summary()
-    # print(summary_dict)
 
-    latent_states, inputs = estimate_latent_and_input(simulated_data_set[0],LatentDim=5,InputDim=2,simulated_params=params)
 
-    
-
-    
-    
+    latent_states, inputs = estimate_latent_and_input(simulated_data_set[0],
+                                                      LatentDim=5,
+                                                      InputDim=2,
+                                                      simulated_params=params,
+                                                      save=False,
+                                                      load=True,
+                                                      unseen_trial=simulated_data_set[2])
 
     
 testing_suite()

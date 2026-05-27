@@ -1,3 +1,4 @@
+from cProfile import label
 from logging import raiseExceptions
 import time
 from typing import Tuple, Iterable
@@ -7,8 +8,8 @@ import scipy.linalg as la
 from scipy.signal import savgol_filter
 from statsmodels.tsa.stattools import adfuller
 from scipy.signal import spectrogram, coherence, welch
-
 from LDSParams import LDSParams
+from Simulator import Simulator
 
 
 class Illustrator:
@@ -1432,6 +1433,206 @@ class Illustrator:
         plt.tight_layout()
         plt.show()
 
+    def plot_ll(self,llrs:np.ndarray)->None:
+        '''
+        use to plot a list of log likelihood ratios as it evolves per iteration
+        '''
+        steps = np.arange(0,len(llrs)-1,1)
+        plt.title('LL evolution')
+        plt.plot(steps,llrs[1:])
+        plt.xlabel('itertions')
+        plt.ylabel('Negative log likelihood')
+        plt.show
+
+    def plot_predicted_vs_actual(self,
+                                 y_actual: np.ndarray,
+                                 y_predicted: np.ndarray,
+                                 R_true: np.ndarray | None = None,
+                                 n_neurons_to_show: int = 6,
+                                 ) -> None:
+        '''
+        Plot predicted vs actual observations on a held-out trial.
+
+        Shows the n_neurons with the worst per-neuron RMSE, with overall metrics
+        in the figure title.
+
+        parameters
+        ----------
+        y_actual : (T, m)
+            Held-out observations from the true system.
+        y_predicted : (T, m)
+            One-step-ahead predictions under the fitted model.
+        R_true : (m, m) | None
+            Optional true observation noise covariance, for the noise floor reference.
+        n_neurons_to_show : int
+            How many of the worst-fitting neurons to display.
+        title : str
+            Figure suptitle.
+        '''
+        assert y_actual.shape == y_predicted.shape, \
+            f"shape mismatch: actual {y_actual.shape} vs predicted {y_predicted.shape}"
+
+        T, m = y_actual.shape
+        n_show = min(n_neurons_to_show, m)
+
+        # Per-neuron RMSE → pick the worst-fitting ones
+        rmse_per_neuron = np.sqrt(np.mean((y_actual - y_predicted) ** 2, axis=0))
+        worst = np.argsort(rmse_per_neuron)[-n_show:][::-1]
+
+        rmse_overall = np.sqrt(np.mean((y_actual - y_predicted) ** 2))
+
+        fig, axes = plt.subplots(
+            n_show, 1,
+            figsize=(8, 1.6 * n_show),
+            sharex=True,
+        )
+        if n_show == 1:
+            axes = [axes]
+
+        time = np.arange(T)
+        for ax, idx in zip(axes, worst):
+            ax.plot(time, y_actual[:, idx],    color="C0", lw=1.3, label="actual")
+            ax.plot(time, y_predicted[:, idx], color="C3", lw=1.0, ls="--", label="predicted")
+            ax.set_ylabel(f"y[{idx}]")
+            ax.text(
+                0.99, 0.95,
+                f"RMSE = {rmse_per_neuron[idx]:.3f}",
+                transform=ax.transAxes,
+                ha="right", va="top",
+                fontsize=9,
+            )
+            ax.grid(True, alpha=0.3)
+
+        axes[0].legend(loc="upper left", fontsize=9)
+        axes[-1].set_xlabel("time step")
+
+        # Header with overall metrics
+        if R_true is not None:
+            floor = np.sqrt(np.trace(R_true) / R_true.shape[0])
+            ratio = rmse_overall / floor
+            header = (f"Held-out one-step prediction \n"
+                    f"overall RMSE = {rmse_overall:.3f},  "
+                    f"noise floor = {floor:.3f},  "
+                    f"ratio = {ratio:.2f}")
+        else:
+            header = f"{"Held-out one-step prediction"}\n overall RMSE = {rmse_overall:.3f}"
+        fig.suptitle(header)
+
+        plt.tight_layout()
+        plt.show()
+
+    @staticmethod
+    def plot_horizons_vs_RMSE(em,
+                              est_params_dynamax,
+                              y_actual,
+                              u_trial,
+                              label:str,
+                              horizons:np.ndarray = np.asarray([1,2,5,10,20,30]),
+                              )->None:
+        '''
+        plots RMSE against reconstruction square error for varying prediction horizon
+        
+        
+        '''
+        rmses = []
+        for k in horizons:
+            y_pred, y_act = Simulator.multi_step_predict(em,est_params_dynamax,y_actual,u_trial, k)
+            rmses.append(np.sqrt(np.mean((y_act - y_pred)**2)))
+
+        plt.plot(horizons, rmses, 'o-',label = label)
+        plt.xlabel('prediction horizon k')
+        plt.ylabel('RMSE')
+        plt.legend()
+        plt.yscale('log')
+
+
+
+
+
+    def plot_frequency_response(self, sim_sim, est_sim) -> None:
+        '''
+        Compare frequency responses of true vs estimated system.
+
+        Plots magnitude (dB) for each input-output pair in a grid.
+        '''
+        if sim_sim.has_default_matrices or est_sim.has_default_matrices:
+            raise ValueError(' at least one of the objects has default matices')
+            return
+
+        omega, H_sim = sim_sim.calculate_transfer_function(num_points=200)
+        _,     H_est = est_sim.calculate_transfer_function(num_points=200)
+
+        y_dim, u_dim = H_sim.shape[1], H_sim.shape[2]
+        fig, axes = plt.subplots(y_dim, u_dim,
+                                figsize=(3 * u_dim, 2 * y_dim),
+                                sharex=True, squeeze=False)
+
+        for i in range(y_dim):
+            for j in range(u_dim):
+                mag_sim = 20 * np.log10(np.abs(H_sim[:, i, j]) + 1e-12)
+                mag_est = 20 * np.log10(np.abs(H_est[:, i, j]) + 1e-12)
+
+                ax = axes[i, j]
+                ax.plot(omega, mag_sim, "C0-",  lw=1.2, label="true")
+                ax.plot(omega, mag_est, "C3--", lw=1.0, label="estimated")
+                ax.grid(True, alpha=0.3)
+
+                if i == 0:
+                    ax.set_title(f"input {j}")
+                if j == 0:
+                    ax.set_ylabel(f"y[{i}] (dB)")
+                if i == y_dim - 1:
+                    ax.set_xlabel("ω (rad/sample)")
+
+        axes[0, 0].legend(loc="best", fontsize=8)
+        fig.suptitle("Frequency response: true vs estimated", y=1.01)
+        plt.tight_layout()
+        plt.show()
+
+
+    def plot_eigenvalues(self,
+                         eig_true:np.ndarray,
+                         eig_est:np.ndarray,
+                         )->None:
+        
+
+        '''
+        use to compare the eigenvalues of the dynamics matric A
+
+        parameters
+        -----------
+        eig_true:np.ndarray
+            eigenvalues of true simulated system
+        eig_est:np.ndarray
+            estimated eignevalues from data
+        '''
+        fig, ax = plt.subplots(figsize=(5, 5))
+
+        # Unit circle
+        theta = np.linspace(0, 2 * np.pi, 200)
+        ax.plot(np.cos(theta), np.sin(theta), "k--", lw=0.8, alpha=0.6,
+                label="unit circle")
+
+        # Axes through origin
+        ax.axhline(0, color="gray", lw=0.5)
+        ax.axvline(0, color="gray", lw=0.5)
+
+        # Eigenvalues
+        ax.scatter(eig_true.real, eig_true.imag,
+                s=90, facecolors="none", edgecolors="C0", lw=2, label="true")
+        ax.scatter(eig_est.real, eig_est.imag,
+                s=90, marker="x", color="C3", lw=2, label="estimated")
+
+        # Cosmetics
+        ax.grid(True, alpha=0.3)
+        ax.set_aspect("equal")              # circle must be circular
+        ax.set_xlabel("Re")
+        ax.set_ylabel("Im")
+        ax.set_title("Argand diagram: estimated vs true eigenvalues")
+        ax.legend(loc="upper right", fontsize=9)
+
+        plt.tight_layout()
+        plt.show()
 
     def plot_all_ssm_matrices(self,simulated_params:LDSParams,estimated_params:LDSParams)->None:
         '''

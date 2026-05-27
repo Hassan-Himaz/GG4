@@ -1,9 +1,12 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from Dynamax_EM_fitting import Dynamax_EM_Fitting
+from dynamax.linear_gaussian_ssm import LinearGaussianSSM
 from LDSParams import LDSParams
-from typing import Any, Callable
+from typing import Any, Callable, Tuple
 import scipy.linalg as la
 from scipy.linalg import solve_discrete_lyapunov
+import jax.numpy as jnp
 
 
 
@@ -38,7 +41,8 @@ class Simulator():
             
         '''
         # Initialise matrix attributes at first to nonsense np arrays
-    
+
+        self.has_default_matrices = True
         self.A = np.zeros(2)
         self.B = np.zeros(2) 
         self.C = np.zeros(2)
@@ -69,16 +73,17 @@ class Simulator():
         
         '''
         
-        p = model_parameters
+        self.params = model_parameters
         
 
-        self.A    = p.A
-        self.B    = p.B
-        self.C    = p.C
-        self.Q    = p.Q
-        self.R    = p.R
-        self.mu_0 = p.mu_0
-        self.P_0  = p.P_0
+        self.A    = self.params.A
+        self.B    = self.params.B
+        self.C    = self.params.C
+        self.Q    = self.params.Q
+        self.R    = self.params.R
+        self.mu_0 = self.params.mu_0
+        self.P_0  = self.params.P_0
+        self.has_default_matrices = False
 
 
     def _generate_trial(self,
@@ -180,6 +185,74 @@ class Simulator():
         plt.show()
 
 
+
+    #--------------generate data_set using kalman filter
+
+    def kalman_filter_predicted_observations(self,
+                                             em:Dynamax_EM_Fitting,
+                                             real_trial:np.ndarray,
+                                             )->np.ndarray:
+        
+
+        '''
+        Run the Kalman filter under the estimated model and return one-step-ahead
+        predicted observations.
+
+        Parameters
+        ----------
+        em : dynamax_EM_Fitting (just for em.model)
+        est_params_dynamax : dynamax ParamsLGSSM (the fitted params, native form)
+        y_trial : (T, emission_dim) — held-out observations
+        u_trial : (T, input_dim) or None — held-out inputs
+
+        Returns
+        -------
+        y_pred : (T, emission_dim) — one-step-ahead predictions
+        '''
+       
+        trial_inputs = em.inputs
+        y_jax = jnp.asarray(real_trial)
+        u_jax = jnp.asarray(trial_inputs)
+
+        posterior = em.model.filter(LDSParams.to_dynamax(self.params),y_jax,u_jax)
+       
+            
+        x_pred = np.asarray(posterior.filtered_means)      # E[x_t | y_{1:t-1}]
+        C_est  = np.asarray(LDSParams.to_dynamax(self.params).emissions.weights)
+        print("x_pred shape:", x_pred.shape)               # should be (T, state_dim) = (61, 5)
+        print("C_est shape:", C_est.shape)                 # should be (emission_dim, state_dim) = (16, 5)
+        print("y_pred shape:", (x_pred @ C_est.T).shape)   # should be (61, 16)
+        return x_pred @ C_est.T
+    
+    @staticmethod
+    def multi_step_predict(em:Dynamax_EM_Fitting, 
+                           est_params_dynamax, 
+                           y_trial:np.ndarray, 
+                           u_trial:np.ndarray, 
+                           k: int):
+        '''
+        k-step-ahead prediction:
+        Filter up to time t, then propagate k steps forward using only inputs.
+        Returns y_pred[t] = predicted y at time (t+k) given data up to t.
+        '''
+        posterior = em.model.filter(est_params_dynamax,
+                                    jnp.asarray(y_trial),
+                                    jnp.asarray(u_trial))
+        x_filt = np.asarray(posterior.filtered_means)         # (T, n)
+        A = np.asarray(est_params_dynamax.dynamics.weights)
+        B = np.asarray(est_params_dynamax.dynamics.input_weights)
+        C = np.asarray(est_params_dynamax.emissions.weights)
+        u = np.asarray(u_trial)
+
+        T = len(y_trial)
+        y_pred = np.zeros((T - k, y_trial.shape[1]))
+        for t in range(T - k):
+            x = x_filt[t]
+            for step in range(k):
+                x = A @ x + B @ u[t + step]
+            y_pred[t] = C @ x
+        return y_pred, y_trial[k:]   # aligned
+        
 
     # ------------------------------------------------------------------
     # Controllability
@@ -368,25 +441,39 @@ class Simulator():
     ###----------------------------------------System Analysis --------------------------------------------- ###
     ### ---------------------------------------------------------------------------------------------------- ###
 
-    def calculate_transfer_function(self, max_frequency=500,points=1000):
+    def calculate_transfer_function(self, num_points: int = 200):
+        '''
+        Compute the discrete-time transfer function H(z) = C (zI - A)^{-1} B
+        evaluated on the unit circle z = e^{jω} for ω ∈ [0, π].
 
-      
-        
-        # Calculate the transfer function H(s) = C * (sI - A)^(-1) * B
-        w = 1j * np.linspace(0, max_frequency, points)  # Frequency range for analysis
+        Returns
+        -------
+        omega : ndarray, shape (num_points,)
+            Frequencies in [0, π].
+        H : ndarray, shape (num_points, y_dim, input_dim)
+            Complex transfer function values.
+        '''
+        omega = np.linspace(0, np.pi, num_points)
+        z = np.exp(1j * omega)
         I = np.eye(self.x_dim)
-        H_s = np.zeros((self.y_dim, self.input_dim, len(w)), dtype=complex)
 
-        for i in range(len(w)):
-            H_s[:, :, i] = self.C @ la.inv(w[i] * I - self.A) @ self.B
+        H = np.zeros((num_points, self.y_dim, self.input_dim), dtype=complex)
+        for i, zi in enumerate(z):
+            # solve (zI - A) X = B for X, then H = C @ X
+            X = np.linalg.solve(zi * I - self.A, self.B)
+            H[i] = self.C @ X
+        return omega, H
 
-        return H_s
-
-
-    def calculate_eigen(self):
+    def calculate_eigen(self) -> Tuple[np.ndarray,np.ndarray]:
         """
         Calculate eigen values for stablity of system
         Calculate eigen vectors for mode of system
+
+        return
+        -------
+        eigenvalues, eigenvectors
+
+
         """
         # Calculate the eigenvalues of the system matrix A
         eigenvalues, eigenvectors = np.linalg.eig(self.A)
@@ -594,7 +681,17 @@ class Simulator():
             steps = np.arange(t_off - t_on)            # 0, 1, 2, ...
             u[t_on:t_off, :] = (slope * steps)[:, None]  # broadcast across inputs
         return u
+    
+    def make_pulse_array_per_channel(self, t_ons, t_offs, amplitudes, total_signal_length, num_inputs):
+        '''
+        Use to make array of specified varied pulse inputs across channels 
+        '''
+        u = np.zeros((total_signal_length, num_inputs))
+        for c, (t_on, t_off, amp) in enumerate(zip(t_ons, t_offs, amplitudes)):
+            u[t_on:t_off, c] = amp
+        return u
 
+       
 
     #-----------------------------------------------------
     # -----------generating ssm matrices
