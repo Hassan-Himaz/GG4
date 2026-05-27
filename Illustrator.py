@@ -1,3 +1,4 @@
+from logging import raiseExceptions
 import time
 from typing import Tuple, Iterable
 import numpy as np
@@ -6,6 +7,8 @@ import scipy.linalg as la
 from scipy.signal import savgol_filter
 from statsmodels.tsa.stattools import adfuller
 from scipy.signal import spectrogram, coherence, welch
+
+from LDSParams import LDSParams
 
 
 class Illustrator:
@@ -1429,6 +1432,79 @@ class Illustrator:
         plt.tight_layout()
         plt.show()
 
+
+    def plot_all_ssm_matrices(self,simulated_params:LDSParams,estimated_params:LDSParams)->None:
+        '''
+        Side-by-side heatmap comparison of true vs estimated LGSSM matrices.
+
+        Columns: true | estimated | difference (estimated - true).
+        Rows: A, B, C, Q, R.
+
+        Note: direct element-wise comparison is sensitive to the similarity-transform
+        ambiguity of LGSSM identification. A non-zero difference does not imply a
+        bad fit — compare eigenvalues of A and predictive likelihood for that.
+
+        parameters
+        ----------
+        simulated_params : LDSParams
+            Ground-truth parameters used to generate the data.
+        estimated_params : LDSParams
+            Parameters recovered by the identifier (EM, PEM, N4SID, ...).
+        '''
+        names = ["A", "B", "C", "Q", "R"]
+        true_mats = [getattr(simulated_params, n) for n in names]
+        est_mats  = [getattr(estimated_params, n) for n in names]
+
+        n_rows = len(names)
+        fig, axes = plt.subplots(
+            n_rows, 3,
+            figsize=(9, 2.2 * n_rows),
+            constrained_layout=True,
+        )
+
+        col_titles = ["True", "Estimated", "Difference"]
+        for j, t in enumerate(col_titles):
+            axes[0, j].set_title(t, fontsize=11)
+
+        for i, (name, T, E) in enumerate(zip(names, true_mats, est_mats)):
+            diff = E - T
+
+            # Symmetric color limits so sign is readable.
+            # Share scale between true & estimated; use diff's own scale for the diff column.
+            if (T.size != 0) and (E.size != 0):
+                vmax_te = max(np.abs(T).max(), np.abs(E).max())
+                vmax_d  = np.abs(diff).max() if diff.size else 1.0
+                vmax_d  = max(vmax_d, 1e-12)  # avoid zero range
+
+                for ax, M, vmax in zip(axes[i], [T, E, diff], [vmax_te, vmax_te, vmax_d]):
+                    im = ax.imshow(M, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
+                    ax.set_xticks([]); ax.set_yticks([])
+                    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+                axes[i, 0].set_ylabel(name, fontsize=12, rotation=0, labelpad=15, va="center")
+            else:
+                for ax in axes[i]:
+                    ax.set_xticks([]); ax.set_yticks([])
+                    for spine in ax.spines.values():
+                        spine.set_visible(False)
+                    ax.text(0.5, 0.5, f"{name}: empty",
+                            ha="center", va="center",
+                            transform=ax.transAxes,
+                            fontsize=10, color="gray")
+                axes[i, 0].set_ylabel(name, fontsize=12, rotation=0, labelpad=15, va="center")
+                        
+
+        # Numerical summary on the figure
+        rho_true = float(np.max(np.abs(np.linalg.eigvals(simulated_params.A))))
+        rho_est  = float(np.max(np.abs(np.linalg.eigvals(estimated_params.A))))
+        fig.suptitle(
+            f"LGSSM parameter comparison    |    "
+            f"ρ(A_true) = {rho_true:.3f},  ρ(A_est) = {rho_est:.3f}",
+            fontsize=11,
+        )
+
+        plt.show()
+
     def plot_scree(self, horizon: int = 4):
         """
         Computes and plots a Scree Plot of the singular values from the 
@@ -1608,6 +1684,9 @@ class Illustrator:
 
         if verbose:
             print(f"\n{'=' * 60}\nrun_all complete\n{'=' * 60}")
+
+
+    ####
 
         
 

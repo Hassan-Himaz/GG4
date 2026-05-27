@@ -1,4 +1,4 @@
-from Illustrator import Illustrator
+from GG4.Illustrator_old import Illustrator
 import numpy as np
 import scipy.linalg as la
 import matplotlib.pyplot as plt

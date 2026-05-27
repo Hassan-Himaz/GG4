@@ -1,778 +1,639 @@
-from cProfile import label
-
-
-from Illustrator import Illustrator
 import numpy as np
-import scipy.linalg as la
 import matplotlib.pyplot as plt
-rng = np.random.default_rng()
-from typing import Callable
-from Controllers import Controllers
-from PEM_framework import PEM_Framework
 from LDSParams import LDSParams
+from typing import Any, Callable
+import scipy.linalg as la
+from scipy.linalg import solve_discrete_lyapunov
 
 
-class Simulator:
 
-    """
-    A class to simulate neural activity data.
-    Initialise with list or matrix parameters: A,B,C,Q,R
-    """
+class Simulator():
+    '''
+    Class to input LGSSM parameters and generates data from the model
+    
+    '''
+    def __init__(self, 
+                 num_hidden_states:int,
+                 num_inputs:int,
+                 num_outputs:int = 16,
+                 ) -> None:
+        '''
+        initialises with just parameters object
 
-    def __init__(self,parameters:LDSParams|None,illustrator: Illustrator,controller:Controllers):
-        """
-        Initialize the Model with set Parameters
-        Accepts a 3D numpy array of shape (A,B,C,Q,R,mu_0,P_0) and stores it for data generation
-        Parameters:
-            parameters (np.ndarray): 3D numpy array of shape (A,B,C,Q,R,mu_0,P_0)  - these need to be correct else will throw error
-        """
-        # if controller is None:
-        #     defaul
-        #     self.controller = Controllers
+        parameters
+        ------------
+
+        num_hidden_states:int
+            number of desired hidden states
+        num_inputs:int
+            number of desired inputs
+        num_outputs:int
+            number of desired outputs -> should match number of neurons so default 16
+
+        typical usage
+        -------------
+        sim = Simulator(num_hidden_states=5,num_inputs=5)
+        params = sim.generate_general_ssm_matrices()
+        sim.set_params(params)
+            
+        '''
+        # Initialise matrix attributes at first to nonsense np arrays
+    
+        self.A = np.zeros(2)
+        self.B = np.zeros(2) 
+        self.C = np.zeros(2)
+        self.Q = np.zeros(2) 
+        self.R = np.zeros(2)
+        self.mu_0 = np.zeros(2)
+        self.P_0 = np.zeros(2)
+
+
+        self.x_dim = num_hidden_states
+        self.y_dim = num_outputs
+        self.input_dim = num_inputs
+
+
+    def set_params(self,
+                    model_parameters:LDSParams,):
+        '''
+        use to set the parameters that the simulator uses
+
+        check is done here to check that the matrices are stable
+
+        parameters
+        -----------
+         model_parameters : LDSParams
+            this object must be of the LDSParams dataclass 
+            contains the LGSSM matrices
+
+        
+        '''
+        
+        p = model_parameters
         
 
-        if parameters is not None:
-            self.A = parameters.A    # using the dataclass
-            self.B = parameters.B
-            self.C = parameters.C
-            self.Q = parameters.Q
-            self.R = parameters.R
-            self.mu_0 = parameters.mu_0
-            self.P_0 = parameters.P_0
-        else:
-            self.A = np.eye(2)    # default
-            self.B = np.eye(2)
-            self.C = np.eye(2)
-            self.Q = np.eye(2)
-            self.R = np.eye(2)
-            self.mu_0 = [0,0]
-            self.P_0 = np.eye(2)
+        self.A    = p.A
+        self.B    = p.B
+        self.C    = p.C
+        self.Q    = p.Q
+        self.R    = p.R
+        self.mu_0 = p.mu_0
+        self.P_0  = p.P_0
 
 
-        self.x_dimensions = len(self.Q)
-        self.y_dimensions = len(self.R)
-        self.illustrator = illustrator
-        self.trial_cnt = self.illustrator.trial_cnt
-        self.timestep_cnt = self.illustrator.timestep_cnt
-        self.neuron_cnt = self.illustrator.neuron_cnt
-        self.observation = self.illustrator.observation
-        self.controller = controller   #input
-    
-
-    def generate_data(self, trials: int, lengths: int, seed: tuple[np.ndarray,np.ndarray], input_function: Callable):
-        '''Generates the data, given set number of trials, lenghts of times, seed for x, and a provided control function'''
-        dataset = []
-        for trial in range(trials):
-            dataset.append(self._generate_trial(length=lengths, seed = seed, input_function=self.controller))
-        return np.array(dataset)
-    
     def _generate_trial(self,
-                         length:int, #
-                         seed:tuple[np.ndarray,np.ndarray], #  seed the inital hidden state value with the infered starting mean - seed should be tuple(m_0,P_0)
-                         input_function: Callable,
-                         return_state=False):
+                        input_fnc:Callable,
+                        use_initialisation_prior:bool = True,
+                        num_timesteps:int = 101,
+                        ) -> tuple[np.ndarray,np.ndarray]:
         '''
-        will return timepoint x neuron dimensional array  for a single simulated trial
-        
-        '''
+        Used to generate a single trial of neural data
 
-        assert seed[0].ndim ==1 and seed[1].shape == (self.x_dimensions,self.x_dimensions)
+        defaults to 101 timesteps
+
+        Parameters
+        ----------
+        use_initialisation_prior:bool
+            tells model to use the initial mean and covariance matrix to generate first data point
+
+        num_timesteps:int
+            number of desired timesteps per trial
+
+
+
+        returns 
+        ----------
+        tuple of 2 numpy arrays
+        data - y values
+        states -x/hidden state values
+         
+        '''
         #intial latent state
-        latent_state = rng.multivariate_normal(seed[0],seed[1])
-        observed_state = np.matmul(self.C,latent_state) + rng.multivariate_normal(np.zeros(self.y_dimensions),self.R)
+        rng = np.random.default_rng()
+        latent_state = rng.multivariate_normal(self.mu_0,self.P_0)
+        observed_state = np.matmul(self.C,latent_state) + rng.multivariate_normal(np.zeros(self.y_dim),self.R)
         data, states = [observed_state], [latent_state]
-        for time in range(length-1):
-            latent_state = np.matmul(self.A,latent_state) + np.matmul(self.B,input_function(time,data))+ rng.multivariate_normal(np.zeros(self.x_dimensions),self.Q)
-            observed_state = np.matmul(self.C,latent_state) + rng.multivariate_normal(np.zeros(self.y_dimensions),self.R)
+
+        for time in range(num_timesteps):
+            latent_state = np.matmul(self.A,latent_state) + np.matmul(self.B,input_fnc(time,data))+ rng.multivariate_normal(np.zeros(self.x_dim),self.Q)
+            observed_state = np.matmul(self.C,latent_state) + rng.multivariate_normal(np.zeros(self.y_dim),self.R)
             data.append(observed_state)
             states.append(latent_state)
         data = np.asarray(data)
         states = np.asarray(states)
             
-        return (data, states) if return_state else data
+        return data, states 
     
-    def compare_plot(self,seed):
+    def generate_dataset(self,num_trials:int = 5,num_timesteps:int = 101,use_initialisation_prior:bool = True) -> np.ndarray:
         '''
-        method that will plot real trial next to generated trial
+        used to generate dataset in similar format as the neural data we are given (trial, timesteps, neuron)
+        defaults to 5 trials , 101 timesteps
 
-        seed should be tuple of (mu_0, P_0)
+        parameters
+        ------------
+        num_trials:int
+            number of desired trials
+
+        num_timesteps:int 
+            number of desired timesteps
+
+        use_initialisation_prior:bool
+            use to switch on and off using mu_0, and p_0 for your initial state  -> currently no false option coded
+
+        must match 
+        
         
         '''
-        print('compare plot')
+        dataset = np.empty([num_trials,num_timesteps+1,self.y_dim])
+        for i in range(0,num_trials):
+            trial_outputs, _ = self._generate_trial(self.make_pulse(0,40,10,self.input_dim), use_initialisation_prior,num_timesteps)
+            dataset[i,:,:] = trial_outputs
+        
+        return dataset
+
+
+    def generate_and_show(self,num_trials:int = 5,num_timesteps:int = 101,use_initialisation_prior:bool = True):
+        '''
+        use to generate a dataset and plot it straight away
 
         
-        
-        real_data = self.observation[0] # choose to compare with trial 1
-        print(real_data)
-        simulated_data = self._generate_trial(length = self.timestep_cnt,seed = seed, input_function = self.input_pulse)
-        time = np.arange(simulated_data.shape[0])
+        parameters
+        ----------
+        num_trials:int
+            desired number of trials
 
-        plt.figure(1)
-        for neuron in range(simulated_data.shape[1]):
-            plt.plot(time,real_data[:,neuron],label = 'real neuron, neuron number{}'.format(neuron))
-            plt.plot(time,simulated_data[:,neuron],label = 'simulated neuron, neuron number{}'.format(neuron))
-        plt.xlabel('time')
-        plt.ylabel('neuron activation')
-        plt.legend()
+        num_timesteps:int
+            number of desired timesteps per trial
+
+        use_initialisation_prior:bool
+            tells model to use the initial mean and covariance matrix to generate first data point
+
+        '''
+        dataset = self.generate_dataset(num_trials,num_timesteps,use_initialisation_prior)
+        #reshape the data to plot all trials
+        outputs = dataset.reshape(-1,dataset.shape[-1]) # dataset stacked
+        time = np.arange(0,len(outputs),1)
+        fig, ax = plt.subplots()
+        ax.plot(time, outputs)
+        ax.set_xlabel("time")
+        ax.set_ylabel("neuron activation")
         plt.show()
+
+
+
+    # ------------------------------------------------------------------
+    # Controllability
+    # ------------------------------------------------------------------
+
+    def controllability_matrix(self):
+        """
+        Compute the controllability matrix:
+
+            M_c = [B, AB, A^2B, ..., A^{n-1}B]
+
+        where n is the state dimension.
+
+        Returns
+        -------
+        Mc : ndarray
+            Controllability matrix with shape (x_dim, x_dim * input_dim).
+        """
+
+        blocks = []
+        A_power = np.eye(self.x_dim)
+
+        for _ in range(self.x_dim):
+            blocks.append(A_power @ self.B)
+            A_power = A_power @ self.A
+
+        Mc = np.hstack(blocks)
+        return Mc
+
+    def controllability_rank(self, tol=1e-10):
+        """
+        Compute the rank of the controllability matrix.
+
+        If rank == x_dim, the system is controllable.
+        """
+
+        Mc = self.controllability_matrix()
+        return np.linalg.matrix_rank(Mc, tol=tol)
+
+    def is_controllable(self, tol=1e-10):
+        """
+        Return True if the system is fully controllable.
+        """
+
+        return self.controllability_rank(tol=tol) == self.x_dim
+
+    # ------------------------------------------------------------------
+    # Observability
+    # ------------------------------------------------------------------
+
+    def observability_matrix(self):
+        """
+        Compute the observability matrix:
+
+            M_o = [C
+                   CA
+                   CA^2
+                   ...
+                   CA^{n-1}]
+
+        where n is the state dimension.
+
+        Returns
+        -------
+        Mo : ndarray
+            Observability matrix with shape (x_dim * y_dim, x_dim).
+        """
+
+        blocks = []
+        A_power = np.eye(self.x_dim)
+
+        for _ in range(self.x_dim):
+            blocks.append(self.C @ A_power)
+            A_power = A_power @ self.A
+
+        Mo = np.vstack(blocks)
+        return Mo
+
+    def observability_rank(self, tol=1e-10):
+        """
+        Compute the rank of the observability matrix.
+
+        If rank == x_dim, the system is observable.
+        """
+
+        Mo = self.observability_matrix()
+        return np.linalg.matrix_rank(Mo, tol=tol)
+
+    def is_observable(self, tol=1e-10):
+        """
+        Return True if the system is fully observable.
+        """
+
+        return self.observability_rank(tol=tol) == self.x_dim
 
     # ------------------------------------------------------------------
     # Gramians
     # ------------------------------------------------------------------
 
     def finite_controllability_gramian(self, horizon=20):
-        Wc = np.zeros((self.x_dimensions, self.x_dimensions))
-        A_power = np.eye(self.x_dimensions)
+        """
+        Compute the finite-horizon controllability Gramian:
+
+            W_c = sum_{k=0}^{horizon-1} A^k B B^T (A^k)^T
+
+        Interpretation:
+            Large eigenvalues mean those state directions are easy to excite by input.
+            Small eigenvalues mean those directions are hard to control.
+
+        Parameters
+        ----------
+        horizon : int
+            Number of time steps used in the finite sum.
+
+        Returns
+        -------
+        Wc : ndarray
+            Finite-horizon controllability Gramian.
+        """
+
+        Wc = np.zeros((self.x_dim, self.x_dim))
+        A_power = np.eye(self.x_dim)
+
         for _ in range(horizon):
             Wc += A_power @ self.B @ self.B.T @ A_power.T
             A_power = A_power @ self.A
+
         return Wc
 
     def finite_observability_gramian(self, horizon=20):
-        Wo = np.zeros((self.x_dimensions, self.x_dimensions))
-        A_power = np.eye(self.x_dimensions)
+        """
+        Compute the finite-horizon observability Gramian:
+
+            W_o = sum_{k=0}^{horizon-1} (A^k)^T C^T C A^k
+
+        Interpretation:
+            Large eigenvalues mean those state directions are easy to observe.
+            Small eigenvalues mean those directions are hidden from observations.
+
+        Parameters
+        ----------
+        horizon : int
+            Number of time steps used in the finite sum.
+
+        Returns
+        -------
+        Wo : ndarray
+            Finite-horizon observability Gramian.
+        """
+
+        Wo = np.zeros((self.x_dim, self.x_dim))
+        A_power = np.eye(self.x_dim)
+
         for _ in range(horizon):
             Wo += A_power.T @ self.C.T @ self.C @ A_power
             A_power = A_power @ self.A
+
         return Wo
 
     def gramian_summary(self, horizon=20):
-        Wc = self.finite_controllability_gramian(horizon)
-        Wo = self.finite_observability_gramian(horizon)
+        """
+        Return eigenvalue summaries for the finite-horizon Gramians.
+
+        This is useful because Gramian eigenvalues tell us which hidden
+        state directions are easy or hard to control/observe.
+        """
+
+        Wc = self.finite_controllability_gramian(horizon=horizon)
+        Wo = self.finite_observability_gramian(horizon=horizon)
+
         eig_Wc = np.linalg.eigvalsh(Wc)
         eig_Wo = np.linalg.eigvalsh(Wo)
+
         return {
-            "Wc": Wc, "Wo": Wo,
-            "eig_Wc": eig_Wc, "eig_Wo": eig_Wo,
-            "min_eig_Wc": np.min(eig_Wc), "max_eig_Wc": np.max(eig_Wc),
-            "min_eig_Wo": np.min(eig_Wo), "max_eig_Wo": np.max(eig_Wo),
+            "Wc": Wc,
+            "Wo": Wo,
+            "eig_Wc": eig_Wc,
+            "eig_Wo": eig_Wo,
+            "min_eig_Wc": np.min(eig_Wc),
+            "max_eig_Wc": np.max(eig_Wc),
+            "min_eig_Wo": np.min(eig_Wo),
+            "max_eig_Wo": np.max(eig_Wo),
+        }
+    
+    ### ---------------------------------------------------------------------------------------------------- ###
+    ###----------------------------------------System Analysis --------------------------------------------- ###
+    ### ---------------------------------------------------------------------------------------------------- ###
+
+    def calculate_transfer_function(self, max_frequency=500,points=1000):
+
+      
+        
+        # Calculate the transfer function H(s) = C * (sI - A)^(-1) * B
+        w = 1j * np.linspace(0, max_frequency, points)  # Frequency range for analysis
+        I = np.eye(self.x_dim)
+        H_s = np.zeros((self.y_dim, self.input_dim, len(w)), dtype=complex)
+
+        for i in range(len(w)):
+            H_s[:, :, i] = self.C @ la.inv(w[i] * I - self.A) @ self.B
+
+        return H_s
+
+
+    def calculate_eigen(self):
+        """
+        Calculate eigen values for stablity of system
+        Calculate eigen vectors for mode of system
+        """
+        # Calculate the eigenvalues of the system matrix A
+        eigenvalues, eigenvectors = np.linalg.eig(self.A)
+        return eigenvalues, eigenvectors
+    
+    def get_controlablity_observablity(self):
+        n = self.A.shape[0]
+        
+        Ctrb = self.B
+        for i in range(1, n):
+            Ctrb = np.hstack((Ctrb, np.linalg.matrix_power(self.A, i) @ self.B))
+
+        Obs = self.C
+        for i in range(1, n):
+            Obs = np.vstack((Obs, self.C @ np.linalg.matrix_power(self.A, i)))
+        
+        return Ctrb, Obs
+
+    def get_grammian(self):
+        # Calculate the controllability Grammian
+        Wc = solve_discrete_lyapunov(self.A, self.B @ self.B.T)
+
+        # Calculate the observability Grammian
+        Wo = solve_discrete_lyapunov(self.A.T, self.C.T @ self.C)
+
+        return Wc, Wo
+    
+    def get_hankel_singular(self, Wc=None, Wo=None):
+        """
+        Use this to measure importance of latent states based on energies of system mode.
+        Hankel singular values, provide a measure of energy for each state in a system. 
+        They are the basis for balanced model reduction, in which high energy states are retained while low energy states are discarded.
+        The reduced model retains the important features of the original model. 
+        """
+        if not Wc or not Wo:
+            Wc, Wo = self.get_grammian()
+        U, S, Vh = np.linalg.svd(Wc @ Wo)
+        return S
+
+    # ------------------------------------------------------------------
+    # Stability and system report
+    # ------------------------------------------------------------------
+
+    def eigenvalues_A(self):
+        """
+        Return eigenvalues of A.
+        """
+
+        return np.linalg.eigvals(self.A)
+
+    def spectral_radius(self):
+        """
+        Return the largest absolute eigenvalue of A.
+
+        For a discrete-time system:
+            spectral radius < 1  means stable without input/noise.
+            spectral radius > 1  means unstable or growing dynamics.
+        """
+
+        eigvals = self.eigenvalues_A()
+        return np.max(np.abs(eigvals))
+
+    def is_stable(self):
+        """
+        Check discrete-time stability.
+
+        For x_{t+1} = A x_t, the system is stable if all eigenvalues
+        of A lie inside the unit circle.
+        """
+
+        return self.spectral_radius() < 1.0
+
+    def system_report(self, horizon=20, print_report=True):
+        """
+        Produce a summary report of the system.
+
+        This is designed to help with Week 1 discussion:
+            - Is the system stable?
+            - Is it controllable?
+            - Is it observable?
+            - Which directions are easy/hard to control or observe?
+        """
+
+        eigvals_A = self.eigenvalues_A()
+        gram = self.gramian_summary(horizon=horizon)
+
+        report = {
+            "state_dim": self.x_dim,
+            "input_dim": self.input_dim,
+            "output_dim": self.y_dim,
+            "eigenvalues_A": eigvals_A,
+            "spectral_radius": self.spectral_radius(),
+            "is_stable": self.is_stable(),
+            "controllability_rank": self.controllability_rank(),
+            "is_controllable": self.is_controllable(),
+            "observability_rank": self.observability_rank(),
+            "is_observable": self.is_observable(),
+            "controllability_gramian_eigenvalues": gram["eig_Wc"],
+            "observability_gramian_eigenvalues": gram["eig_Wo"],
         }
 
-    def plot_gramians(self, horizon=20):
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-        for ax, M, title in zip(
-            axes,
-            [self.finite_controllability_gramian(horizon),
-             self.finite_observability_gramian(horizon)],
-            [f"Controllability Gramian (h={horizon})",
-             f"Observability Gramian (h={horizon})"],
-        ):
-            im = ax.imshow(M, aspect="auto")
-            fig.colorbar(im, ax=ax)
-            ax.set_title(title)
-        fig.tight_layout()
-        plt.show()
+        if print_report:
+            print("=" * 60)
+            print("SYSTEM REPORT")
+            print("=" * 60)
+            print(f"State dimension:       {self.x_dim}")
+            print(f"Input dimension:       {self.input_dim}")
+            print(f"Output dimension:      {self.y_dim}")
+            print()
+            print("Eigenvalues of A:")
+            print(eigvals_A)
+            print(f"Spectral radius:       {report['spectral_radius']:.4f}")
+            print(f"Stable?                {report['is_stable']}")
+            print()
+            print(f"Controllability rank:  {report['controllability_rank']} / {self.x_dim}")
+            print(f"Fully controllable?    {report['is_controllable']}")
+            print()
+            print(f"Observability rank:    {report['observability_rank']} / {self.x_dim}")
+            print(f"Fully observable?      {report['is_observable']}")
+            print()
+            print("Controllability Gramian eigenvalues:")
+            print(gram["eig_Wc"])
+            print()
+            print("Observability Gramian eigenvalues:")
+            print(gram["eig_Wo"])
+            print("=" * 60)
 
-    def input_pulse(self,
-                    time:int,
-                    data:np.ndarray,
-                    )-> np.ndarray:
-        t_on = 0
-        t_off = 100
-        amplitude = 10
-        num_inputs = 2
-        if t_on <= time < t_off:
-            return np.full(num_inputs,amplitude)
-        else: 
+        return report
+    
+
+
+    ##---------------------------------------------
+    #--------inputs factory 
+  
+    def make_pulse(self,t_on: int, t_off: int, amplitude: float, num_inputs: int) -> Callable:
+        def pulse(time: int, data: list) -> np.ndarray:
+            if t_on <= time < t_off:
+                return np.full(num_inputs, amplitude)
             return np.zeros(num_inputs)
+        return pulse
+
+    def make_sine(self,freq: float, amplitude: float, num_inputs: int, dt: float = 1.0):
+        def sine(time, data):
+            return np.full(num_inputs, amplitude * np.sin(2 * np.pi * freq * time * dt))
+        return sine
+
+    def make_zero(self,num_inputs: int):
+        return lambda time, data: np.zeros(num_inputs)
+    
+    def make_ramp(self, t_on: int, t_off: int, slope: float, num_inputs: int) -> Callable:
+        """Linear ramp from 0 at t_on, growing by `slope` per step, held flat after t_off."""
+        def ramp(time: int, data: list) -> np.ndarray:
+            if time < t_on:
+                return np.zeros(num_inputs)
+            elapsed = min(time, t_off) - t_on
+            return np.full(num_inputs, slope * elapsed)
+        return ramp
+    
+
+    #-----------------------------------------------------
+    # -----------generating ssm matrices
+    ##---------------------------------------------------
+
+    def get_ssm_2D(self) -> LDSParams:
+        '''
+        use to quickly return a set of 2 state lgssm matrices
         
-    @staticmethod
-    def load_latest_dump(folder: str = "trial_dumps"):
-        import os, pandas as pd
+        '''
+         #2 hidden state 2 input state matrices
+        A = np.array([[0.01,0 ],
+                    [0, 0.01]])
+        B = np.array([[0.2, 0],
+                    [0,0.2 ]])
+        C = np.array([[0.95, 0],
+                    [0,0.95 ]])
+        Q = np.array([[0.95, 0],
+                    [0,0.95 ]])
+        R = np.array([[0.95, 0],
+                    [0,0.95 ]])
+        mu_0 = np.array([0,0])
+        P_0 = np.array([[0.95, 0],
+                    [0,0.95 ]])
 
-        if not os.path.isdir(folder):
-            raise FileNotFoundError(f"folder '{folder}' does not exist — save a trial first")
 
-        files = sorted(f for f in os.listdir(folder) if f.endswith(".csv"))
-        if not files:
-            raise FileNotFoundError(f"no CSVs in {folder}")
+        params = (A,B,C,Q,R,mu_0,P_0)
+        return LDSParams.from_tuple(params)
+    
+    def generate_general_ssm_matrices(self,) -> LDSParams:
+        '''
+        Use to generate general stable SSM matrices.
 
-        path = os.path.join(folder, files[-1])
 
-        params = {}
-        skip = 0
-        with open(path) as f:
-            for line in f:
-                if line.startswith("#") or line.strip() == "":
-                    if line.startswith("#"):
-                        key, _, val = line.lstrip("# ").partition(":")
-                        if key.strip():
-                            params[key.strip()] = val.strip()
-                    skip += 1
-                else:
-                    break
-        params["_filename"] = files[-1]
+        returns
+        -------
+        LDSParams
+            dataclass with random stable matrices (A, B, C, D, Q, R, mu_0, P_0)
+        '''
+        rng = np.random.default_rng()
+        n, u, m = self.x_dim,self.input_dim, self.y_dim
 
-        df = pd.read_csv(path, skiprows=skip)
-        return params, df            
+        # A: random Gaussian rescaled to spectral radius 0.95 → stable, visible dynamics
+        A = rng.standard_normal((n, n))
+        A = A * (0.95 / np.max(np.abs(np.linalg.eigvals(A))))
 
-    def _open_comparison_window(self):
-            """Pop-up window for running Illustrator methods on real and saved sim data.
-                to be used in explore
+        # B, C, D: random Gaussian, full rank almost surely
+        B = rng.standard_normal((n, u))
+        C = rng.standard_normal((m, n))
+
+        # Q, R: PSD via M Mᵀ. Scale chosen so signal dominates noise.
+        Mq = rng.standard_normal((n, n))
+        Q  = 0.05 * (Mq @ Mq.T) / n
+
+        Mr = rng.standard_normal((m, m))
+        R  = 0.05 * (Mr @ Mr.T) / m
+
+        # Initial state: stationary distribution
+        mu_0 = np.zeros(n)
+        P_0  = solve_discrete_lyapunov(A, Q)
+
+        return LDSParams(A=A, B=B, C=C, Q=Q, R=R, mu_0=mu_0, P_0=P_0)
+    
+
             
-            """
-            import tkinter as tk
-            import os
+    
+    
 
-            # check there's actually a dump to compare against
-            if not os.path.isdir("trial_dumps") or not os.listdir("trial_dumps"):
-                print("no dumps in trial_dumps/ — click 'Save trial to CSV' first")
-                return
-
-            win = tk.Toplevel()
-            win.title("Compare real vs simulated")
-
-            tk.Label(win, text="Illustrator method:").pack(anchor="w", padx=8, pady=(8, 2))
-
-            methods = [m for m in dir(self.illustrator)
-                    if not m.startswith("_")
-                    and callable(getattr(self.illustrator, m))]
-            method_var = tk.StringVar(value=methods[0] if methods else "")
-            tk.OptionMenu(win, method_var, *methods).pack(fill=tk.X, padx=8)
-
-            info = tk.Label(win, text="", fg="gray", justify="left", anchor="w",
-                            wraplength=300)
-
-            def run_comparison():
-                method = method_var.get()
-
-                # load latest dump
-                try:
-                    params, df = Simulator.load_latest_dump()
-                except Exception as e:
-                    info.config(text=f"load err: {e}"); return
-                sim_cols = sorted(c for c in df.columns if c.startswith("sim_"))
-                sim_obs = df[sim_cols].to_numpy()[np.newaxis, ...]
-
-                # run method on real, then on sim — swap observation in/out
-                original = self.illustrator.observation
-                try:
-                    self.illustrator.observation = self.observation
-                    getattr(self.illustrator, method)()
-                    self.illustrator.observation = sim_obs
-                    getattr(self.illustrator, method)()
-                    latest = sorted(os.listdir("trial_dumps"))[-1]
-                    param_lines = "\n".join(f"  {k}: {v}" for k, v in params.items()
-                                            if k.startswith("input"))
-                    info.config(text=f"ran {method} on real and on:\n{latest}\n{param_lines}")
-                except Exception as e:
-                    info.config(text=f"viz err: {e}")
-                finally:
-                    self.illustrator.observation = original
-
-            tk.Button(win, text="Compare", command=run_comparison).pack(fill=tk.X, padx=8, pady=4)
-            info.pack(fill=tk.X, padx=8, pady=(4, 8))
-
-
-    #graphics pop-up window
-    def explore(self):
 
     
 
-        """Live parameter tweaking with a tkinter panel."""
-        import tkinter as tk
-        from matplotlib.figure import Figure
-        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-
-        root = tk.Tk()
-        root.title("LDS parameter explorer")
-
-        controls = tk.Frame(root)
-        controls.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=8)
-
-        fig = Figure(figsize=(7, 4))
-        ax_obs = fig.add_subplot(111)
-        ax_obs.set_ylabel("activation")
-        ax_obs.set_xlabel("time")
-        fig.tight_layout()
-        canvas = FigureCanvasTkAgg(fig, master=root)
-        canvas.get_tk_widget().pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-
-        entries = {}
-        self._controllers = Controllers()    # if not already on self
-
-        # --- dimension selector ---
-        dim_frame = tk.LabelFrame(controls, text="dimensions", padx=4, pady=2)
-        dim_frame.pack(fill=tk.X, pady=3)
-
-        tk.Label(dim_frame, text="hidden states (x_dim)").grid(row=0, column=0, sticky="w")
-        x_dim_var = tk.IntVar(value=self.x_dimensions)
-        tk.Spinbox(dim_frame, from_=1, to=5, width=4, textvariable=x_dim_var,
-                command=lambda: resize_state(x_dim_var.get())).grid(row=0, column=1, padx=4)
-        
-        tk.Label(dim_frame, text="inputs (u_dim)").grid(row=1, column=0, sticky="w")
-        u_dim_var = tk.IntVar(value=self.B.shape[1])
-        tk.Spinbox(dim_frame, from_=1, to=5, width=4, textvariable=u_dim_var,
-                command=lambda: resize_inputs(u_dim_var.get())).grid(row=1, column=1, padx=4)
-        
-        #spectra block setup
-        spectra = tk.Frame(root)
-        spectra.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=8)
-        tk.Label(spectra, text="spectra", font=("", 9, "bold")).pack(anchor="w", pady=(0, 4))
-
-        spectra_labels = {}
-        for name in ["A", "B", "C", "Q", "R", "P_0"]:
-            frame = tk.LabelFrame(spectra, text=name, padx=4, pady=2)
-            frame.pack(fill=tk.X, pady=3)
-            lbl = tk.Label(frame, text="", justify="left", font=("Courier", 9),
-                        anchor="w", width=28)
-            lbl.pack(anchor="w")
-            spectra_labels[name] = lbl
-
-        #neuron toggle block setup
-        # --- plot controls column ---
-        plot_ctrl = tk.Frame(root)
-        plot_ctrl.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=8)
-        tk.Label(plot_ctrl, text="plot controls", font=("", 9, "bold")).pack(anchor="w", pady=(0, 4))
-
-        import matplotlib.cm as _cm
-        _N_COLORS = 20
-        NEURON_COLORS = [_cm.tab20(i / _N_COLORS) for i in range(_N_COLORS)]
-
-        def _hex(c):
-            return "#{:02x}{:02x}{:02x}".format(int(c[0]*255), int(c[1]*255), int(c[2]*255))
-
-        # --- neuron toggles (scrollable, split real / sim) ---
-        neuron_outer = tk.LabelFrame(plot_ctrl, text="neurons", padx=4, pady=2)
-        neuron_outer.pack(fill=tk.X, pady=(8, 4))
-
-        n_scroll = tk.Canvas(neuron_outer, width=120, height=220, highlightthickness=0)
-        n_sb = tk.Scrollbar(neuron_outer, orient="vertical", command=n_scroll.yview)
-        n_scroll.configure(yscrollcommand=n_sb.set)
-        n_sb.pack(side=tk.RIGHT, fill=tk.Y)
-        n_scroll.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        n_inner = tk.Frame(n_scroll)
-        n_scroll.create_window((0, 0), window=n_inner, anchor="nw")
-        n_inner.bind("<Configure>", lambda e: n_scroll.configure(scrollregion=n_scroll.bbox("all")))
-
-        real_neuron_frame = tk.LabelFrame(n_inner, text="real", padx=2, pady=2)
-        real_neuron_frame.pack(fill=tk.X, padx=2, pady=(2, 0))
-        sim_neuron_frame  = tk.LabelFrame(n_inner, text="simulated", padx=2, pady=2)
-        sim_neuron_frame.pack(fill=tk.X, padx=2, pady=(4, 2))
-
-        real_neuron_vars = {}
-        sim_neuron_vars  = {}
-
-        def _set_all_neurons(d, v):
-            for var in d.values():
-                var.set(v)
-            redraw()
-
-        def build_neuron_checkboxes():
-            for child in real_neuron_frame.winfo_children():
-                child.destroy()
-            for child in sim_neuron_frame.winfo_children():
-                child.destroy()
-            real_neuron_vars.clear()
-            sim_neuron_vars.clear()
-
-            n_neurons = self.observation.shape[-1]
-            for i in range(n_neurons):
-                col = _hex(NEURON_COLORS[i % _N_COLORS])
-                rv = tk.BooleanVar(value=True)
-                real_neuron_vars[i] = rv
-                tk.Checkbutton(real_neuron_frame, text=f"n{i}", variable=rv,
-                               fg=col, selectcolor="black",
-                               command=lambda: redraw()).grid(row=i // 2, column=i % 2, sticky="w")
-                sv = tk.BooleanVar(value=True)
-                sim_neuron_vars[i] = sv
-                tk.Checkbutton(sim_neuron_frame, text=f"n{i}", variable=sv,
-                               fg=col, selectcolor="black",
-                               command=lambda: redraw()).grid(row=i // 2, column=i % 2, sticky="w")
-
-            r_btns = tk.Frame(n_inner)
-            r_btns.pack(fill=tk.X, padx=2, pady=(0, 1))
-            tk.Button(r_btns, text="r:all",  command=lambda: _set_all_neurons(real_neuron_vars, True )).pack(side=tk.LEFT, expand=True, fill=tk.X)
-            tk.Button(r_btns, text="r:none", command=lambda: _set_all_neurons(real_neuron_vars, False)).pack(side=tk.LEFT, expand=True, fill=tk.X)
-
-            s_btns = tk.Frame(n_inner)
-            s_btns.pack(fill=tk.X, padx=2, pady=(0, 2))
-            tk.Button(s_btns, text="s:all",  command=lambda: _set_all_neurons(sim_neuron_vars, True )).pack(side=tk.LEFT, expand=True, fill=tk.X)
-            tk.Button(s_btns, text="s:none", command=lambda: _set_all_neurons(sim_neuron_vars, False)).pack(side=tk.LEFT, expand=True, fill=tk.X)
-
-        build_neuron_checkboxes()
-
-        #states and inputs checkboxes
-        input_plot_frame = tk.LabelFrame(plot_ctrl, text="inputs", padx=4, pady=2)
-        input_plot_frame.pack(fill=tk.X, pady=4)
-        input_vars = {}
-
-        state_plot_frame = tk.LabelFrame(plot_ctrl, text="states", padx=4, pady=2)
-        state_plot_frame.pack(fill=tk.X, pady=4)
-        state_vars = {}
-
-        def build_input_checkboxes():
-            for child in input_plot_frame.winfo_children():
-                child.destroy()
-            input_vars.clear()
-            for i in range(self.B.shape[1]):
-                var = tk.BooleanVar(value=True)
-                input_vars[i] = var
-                tk.Checkbutton(input_plot_frame, text=f"input {i}", variable=var,
-                            command=lambda: redraw()).pack(anchor="w")
-
-        def build_state_checkboxes():
-            for child in state_plot_frame.winfo_children():
-                child.destroy()
-            state_vars.clear()
-            for i in range(self.x_dimensions):
-                var = tk.BooleanVar(value=True)
-                state_vars[i] = var
-                tk.Checkbutton(state_plot_frame, text=f"state {i}", variable=var,
-                            command=lambda: redraw()).pack(anchor="w")
-
-        build_input_checkboxes()
-        build_state_checkboxes()
-
-        # --- matrix panels (rebuild-able) ---
-        panel_container = tk.Frame(controls)
-        panel_container.pack(fill=tk.X)
-
-        def panel(name, value):
-            arr = np.atleast_2d(value)
-            frame = tk.LabelFrame(panel_container, text=name, padx=4, pady=2)
-            frame.pack(fill=tk.X, pady=3)
-            grid = []
-            for i in range(arr.shape[0]):
-                row = []
-                for j in range(arr.shape[1]):
-                    e = tk.Entry(frame, width=7, justify="right")
-                    e.insert(0, f"{arr[i, j]:.4g}")
-                    e.grid(row=i, column=j, padx=1, pady=1)
-                    e.bind("<Return>", lambda *_: redraw())
-                    row.append(e)
-                grid.append(row)
-            entries[name] = grid
-
-        def build_panels():
-            """(Re)create all matrix panels from current self.* values."""
-            for child in panel_container.winfo_children():
-                child.destroy()
-            entries.clear()
-            for name, val in [("A", self.A), ("B", self.B), ("C", self.C),
-                            ("Q", self.Q), ("R", self.R),
-                            ("mu_0", self.mu_0.reshape(1, -1)), ("P_0", self.P_0)]:
-                panel(name, val)
-
-        def resize_state(new_dim: int):
-            """Reshape A, B, Q, mu_0, P_0, and C's columns to new_dim. Preserve overlap; fill new entries sensibly."""
-            old = self.x_dimensions
-            if new_dim == old:
-                return
-
-            def resize(M, shape, fill=0.0, identity_diag=False):
-                out = np.full(shape, fill)
-                if identity_diag:
-                    np.fill_diagonal(out, 0.9 if shape[0] == shape[1] else 1.0)
-                r = min(M.shape[0], shape[0])
-                c = min(M.shape[1], shape[1]) if M.ndim == 2 else 0
-                if M.ndim == 1:
-                    out[:r] = M[:r]
-                else:
-                    out[:r, :c] = M[:r, :c]
-                return out
-
-            n_in = self.B.shape[1]
-            y    = self.y_dimensions
-
-            self.A    = resize(self.A,   (new_dim, new_dim), identity_diag=True)
-            self.B    = resize(self.B,   (new_dim, n_in))
-            self.C    = resize(self.C,   (y, new_dim))
-            self.Q    = resize(self.Q,   (new_dim, new_dim), identity_diag=True)
-            self.P_0  = resize(self.P_0, (new_dim, new_dim), identity_diag=True)
-            self.mu_0 = resize(self.mu_0, (new_dim,))
-            self.x_dimensions = new_dim
-
-            build_panels()
-            build_state_checkboxes() 
-            redraw()
-
-
-        def resize_inputs(new_n_in: int):
-            """Reshape B's columns to new_n_in. Preserve overlap; new columns get zeros."""
-            if new_n_in == self.B.shape[1]:
-                return
-            x_dim = self.x_dimensions
-            out = np.zeros((x_dim, new_n_in))
-            c = min(self.B.shape[1], new_n_in)
-            out[:, :c] = self.B[:, :c]
-            self.B = out
-            build_panels()
-            build_state_checkboxes() 
-            redraw()
-
-        build_panels()
-        # --- input controller panel ---
-        input_frame = tk.LabelFrame(controls, text="input", padx=4, pady=2)
-        input_frame.pack(fill=tk.X, pady=6)
-
-        input_type = tk.StringVar(value="pulse")
-        input_params = {}            # {type_name: {param_name: Entry}}
-        input_subframes = {}         # {type_name: Frame}
-
-        def make_subframe(name, fields):
-            """fields: list of (label, default) tuples."""
-            sub = tk.Frame(input_frame)
-            params = {}
-            for r, (label, default) in enumerate(fields):
-                tk.Label(sub, text=label, width=10, anchor="w").grid(row=r, column=0)
-                e = tk.Entry(sub, width=7, justify="right")
-                e.insert(0, str(default))
-                e.bind("<Return>", lambda *_: redraw())
-                e.grid(row=r, column=1, padx=2, pady=1)
-                params[label] = e
-            input_params[name] = params
-            input_subframes[name] = sub
-
-        make_subframe("pulse", [("t_on", 5), ("t_off", 15), ("amplitude", 1.0)])
-        make_subframe("ramp",  [("t_on", 5), ("t_off", 40), ("slope", 0.2)])
-        make_subframe("sine",  [("freq", 0.05), ("amplitude", 1.0), ("dt", 1.0)])
-        make_subframe("zero",  [])
-
-        def switch_input(*_):
-            for sub in input_subframes.values():
-                sub.pack_forget()
-            input_subframes[input_type.get()].pack(fill=tk.X)
-            redraw()
-
-        dropdown = tk.OptionMenu(input_frame, input_type,
-                                "pulse", "ramp", "sine", "zero",
-                                command=switch_input)
-        dropdown.pack(fill=tk.X, pady=2)
-        input_subframes["pulse"].pack(fill=tk.X)  # default visible
-
-        def build_input():
-            """Construct the current input function from the active panel."""
-            n_in = self.B.shape[1]
-            p = {k: float(v.get()) for k, v in input_params[input_type.get()].items()}
-            t = input_type.get()
-            if t == "pulse":
-                return self._controllers.make_pulse(int(p["t_on"]), int(p["t_off"]),
-                                                    p["amplitude"], n_in)
-            if t == "ramp":
-                return self._controllers.make_ramp(int(p["t_on"]), int(p["t_off"]),
-                                                p["slope"], n_in)
-            if t == "sine":
-                return self._controllers.make_sine(p["freq"], p["amplitude"], n_in, p["dt"])
-            return self._controllers.make_zero(n_in)
-        
-        def update_spectra():
-            for name in ["A", "Q", "R", "P_0"]:
-                M = getattr(self, name)
-                try:
-                    eigs = np.linalg.eigvals(M)
-                    eigs = eigs[np.argsort(-np.abs(eigs))]   # sort by magnitude
-                    lines = []
-                    for e in eigs:
-                        if abs(e.imag) > 1e-9:
-                            lines.append(f"{e.real:+.3f}{e.imag:+.3f}j")
-                        else:
-                            lines.append(f"{e.real:+.3f}")
-                    if name == "A":
-                        lam = np.abs(eigs).max()
-                        tag = "stable" if lam < 1 else "unstable" if lam > 1 else "marginal"
-                        lines.append(f"|λ|max = {lam:.3f}  ({tag})")
-                    spectra_labels[name].config(text="\n".join(lines))
-                except Exception as e:
-                    spectra_labels[name].config(text=f"err: {e}")
-
-            # B and C are typically rectangular → singular values, not eigenvalues
-            for name in ["B", "C"]:
-                M = getattr(self, name)
-                try:
-                    sv = np.linalg.svd(M, compute_uv=False)
-                    text = "σ:\n" + "\n".join(f"{s:.3f}" for s in sv)
-                    cond = sv.max() / sv.min() if sv.min() > 1e-12 else float("inf")
-                    text += f"\ncond = {cond:.1f}"
-                    spectra_labels[name].config(text=text)
-                except Exception as e:
-                    spectra_labels[name].config(text=f"err: {e}")
-
-        # last sim data — shared with input/state popup windows
-        _last = {"t": None, "sim": None, "states": None, "input_fn": None}
-
-        # --- read / redraw (modified to use build_input) ---
-        def read(name):
-            return np.array([[float(e.get()) for e in row] for row in entries[name]])
-
-        def redraw():
-            try:
-                self.A, self.B, self.C = read("A"), read("B"), read("C")
-                self.Q, self.R, self.P_0 = read("Q"), read("R"), read("P_0")
-                self.mu_0 = read("mu_0").ravel()
-                input_fn = build_input()
-            except (ValueError, KeyError) as e:
-                status.config(text=f"parse error: {e}"); return
-
-            try:
-                sim, states = self._generate_trial(length=self.timestep_cnt,
-                                                seed=(self.mu_0, self.P_0),
-                                                input_function=input_fn,
-                                                return_state=True)
-            except Exception as e:
-                status.config(text=f"sim error: {e}"); return
-
-            ax_obs.clear()
-
-            t = np.arange(sim.shape[0])
-            real = self.observation[0]
-
-            # store for popup windows
-            _last["t"] = t
-            _last["sim"] = sim
-            _last["states"] = states
-            _last["input_fn"] = input_fn
-
-            # observations — colour fixed by neuron index, not plot order
-            any_obs = False
-            for n, v in real_neuron_vars.items():
-                if v.get() and n < real.shape[1]:
-                    ax_obs.plot(t, real[:, n], color=NEURON_COLORS[n % _N_COLORS],
-                                alpha=0.6, label=f"real {n}")
-                    any_obs = True
-            for n, v in sim_neuron_vars.items():
-                if v.get() and n < sim.shape[1]:
-                    ax_obs.plot(t, sim[:, n], color=NEURON_COLORS[n % _N_COLORS],
-                                linestyle="--", label=f"sim {n}")
-                    any_obs = True
-            if any_obs:
-                ax_obs.legend(fontsize=8, loc="upper right")
-
-            ax_obs.set_ylabel("activation")
-            ax_obs.set_xlabel("time")
-            fig.tight_layout()
-            canvas.draw()
-            update_spectra()
-            status.config(text="ok")
-                        
-        def open_input_window():
-            if _last["t"] is None:
-                return
-            t, fn = _last["t"], _last["input_fn"]
-            win = tk.Toplevel(root)
-            win.title("Input u(t)")
-            f = Figure(figsize=(7, 3))
-            ax = f.add_subplot(111)
-            u_trace = np.array([fn(ti, []) for ti in t])
-            selected_in = [i for i, v in input_vars.items() if v.get()]
-            for i in selected_in:
-                ax.plot(t, u_trace[:, i], label=f"u_{i}")
-            if selected_in:
-                ax.legend(fontsize=8)
-            ax.set_ylabel("input")
-            ax.set_xlabel("time")
-            f.tight_layout()
-            c = FigureCanvasTkAgg(f, master=win)
-            c.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-            c.draw()
-
-        def open_state_window():
-            if _last["t"] is None:
-                return
-            t, states = _last["t"], _last["states"]
-            win = tk.Toplevel(root)
-            win.title("Latent states x(t)")
-            f = Figure(figsize=(7, 3))
-            ax = f.add_subplot(111)
-            selected_st = [i for i, v in state_vars.items() if v.get()]
-            for i in selected_st:
-                ax.plot(t, states[:, i], label=f"x_{i}")
-            if selected_st:
-                ax.legend(fontsize=8)
-            ax.set_ylabel("latent state")
-            ax.set_xlabel("time")
-            f.tight_layout()
-            c = FigureCanvasTkAgg(f, master=win)
-            c.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-            c.draw()
-
-        def save_csv():
-            import os, csv, datetime
-
-            try:
-                input_fn = build_input()
-                sim = self._generate_trial(length=self.timestep_cnt,
-                                        seed=(self.mu_0, self.P_0),
-                                        input_function=input_fn)
-            except Exception as e:
-                status.config(text=f"sim error: {e}"); return
-
-            save_dir = "trial_dumps"
-            os.makedirs(save_dir, exist_ok=True)
-
-            fname = f"trial_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            path = os.path.join(save_dir, fname)
-
-            real = self.observation[0]
-            T = sim.shape[0]
-            n_in = self.B.shape[1]
-
-            with open(path, "w", newline="") as f:
-                w = csv.writer(f)
-
-                # --- header: parameters as comments ---
-                w.writerow([f"# input_type: {input_type.get()}"])
-                for k, v in input_params[input_type.get()].items():
-                    w.writerow([f"# input_{k}: {v.get()}"])
-                for name in ["A", "B", "C", "Q", "R", "mu_0", "P_0"]:
-                    M = getattr(self, name)
-                    w.writerow([f"# {name}: {M.flatten().tolist()}  shape={M.shape}"])
-        
-                w.writerow([])
-
-                # --- data ---
-                y_dim = sim.shape[1]
-                w.writerow(["t"]
-                        + [f"real_{i}"  for i in range(y_dim)]
-                        + [f"sim_{i}"   for i in range(y_dim)]
-                        + [f"input_{i}" for i in range(n_in)])
-                for t in range(T):
-                    u = input_fn(t, [])
-                    w.writerow([t] + list(real[t]) + list(sim[t]) + list(u))
-
-            status.config(text=f"saved {fname}")
-
-        tk.Button(spectra, text="Update (or hit Return)", command=redraw).pack(fill=tk.X, pady=(12, 4))
-        tk.Button(spectra, text="Show inputs",  command=open_input_window).pack(fill=tk.X, pady=2)
-        tk.Button(spectra, text="Show states",  command=open_state_window).pack(fill=tk.X, pady=2)
-        tk.Button(spectra, text="Save trial to CSV",      command=save_csv).pack(fill=tk.X, pady=4)
-        tk.Button(spectra, text="Plot Gramians",
-                command=lambda: self.plot_gramians()).pack(fill=tk.X, pady=4)
-        tk.Button(spectra, text="Open comparison window",
-                command=lambda: self._open_comparison_window()).pack(fill=tk.X, pady=4)
-        status = tk.Label(spectra, text="", fg="gray", wraplength=240, justify="left")
-        status.pack(fill=tk.X, pady=(8, 0))
-
-        redraw()
-        root.mainloop()
-
-
-
-
-        #default method
-
-    @classmethod
-    def default_demo(cls, dataset_path: str = "ExampleDataset.npy"):
-        """
-        One-shot entry point: loads a dataset, sets up sensible defaults,
-        runs the illustrator's full report, then opens the explorer.
-        Equivalent to the testing_suite() in the notebook.
-        """
-        illustrator = Illustrator(np.load(dataset_path))
-        illustrator.run_all()
-
-        controller = Controllers().make_pulse(0, 10, 10, 2)
-
-        params = LDSParams.from_tuple((
-            np.array([[0.01, 0   ], [0,    0.01]]),     # A
-            np.array([[0.2,  0   ], [0,    0.2 ]]),     # B
-            np.array([[0.95, 0   ], [0,    0.95]]),     # C
-            np.array([[0.95, 0   ], [0,    0.95]]),     # Q
-            np.array([[0.95, 0   ], [0,    0.95]]),     # R
-            np.array([0, 0]),                           # mu_0
-            np.array([[0.95, 0   ], [0,    0.95]]),     # P_0
-        ))
-
-        sim = cls(params, illustrator, controller)
-        sim.explore()
-        return sim
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
