@@ -138,10 +138,11 @@ class Dynamax_EM_Fitting():
             )
         
 
-            llr_arr.append(llr)
-            if np.any(~np.isfinite(llr_arr)):
-                tqdm.write(f"restart {restart}: diverged (NaN in lls), skipping")
+            llr_local = np.asarray(llr)
+            if np.any(~np.isfinite(llr_local)):
+                tqdm.write(f"restart {restart}: diverged, skipping")
                 continue
+            llr_arr.append(llr_local)
 
             final_llr = float(llr[-1])
 
@@ -160,8 +161,8 @@ class Dynamax_EM_Fitting():
             raise RuntimeError("All EM restarts diverged. Try smaller state_dim or different init.")
         
 
-        mean_llr_arr = np.stack(llr_arr,axis=0)
-        mean_llr_arr = mean_llr_arr.mean(axis = 0)
+        # mean_llr_arr = np.stack(llr_arr,axis=0)
+        # mean_llr_arr = mean_llr_arr.mean(axis = 0)
         
         return LDSParams.from_dynamax(best_params), best_ll, llr_to_return
 

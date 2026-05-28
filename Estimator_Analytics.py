@@ -24,14 +24,19 @@ class Estimator_Analytics():
         simulated_params: LDSParams | None = None,
         save_load: str | None = None,            # "save", "load", or None
         num_iter: int = 30,
-        num_restarts: int = 200,
+        num_restarts: int = 50,
         unseen_trial: np.ndarray | None = None,
         run_name: str = "run_002",
-    ) -> tuple[LDSParams, "Dynamax_EM_Fitting"] | None:
+    ) -> tuple[LDSParams, "Dynamax_EM_Fitting"]:
         '''
         Fit (or load) an LGSSM via EM, then run diagnostic plots.
         Returns (best_params, fitted_em) so the caller can use the fitted model
         directly for smoothing/prediction without re-instantiating EM.
+
+        parameters
+        -----------
+
+
         '''
         illustrator = Illustrator(np.load("ExampleDataset.npy"))
 

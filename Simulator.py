@@ -87,7 +87,7 @@ class Simulator():
 
 
     def _generate_trial(self,
-                        input_fnc:Callable,
+                        inputs:np.ndarray,
                         use_initialisation_prior:bool = True,
                         num_timesteps:int = 101,
                         ) -> tuple[np.ndarray,np.ndarray]:
@@ -113,6 +113,10 @@ class Simulator():
         states -x/hidden state values
          
         '''
+
+        if self.has_default_matrices:
+            raise ValueError('tried to generate data, when sim parameters where never updated')
+
         #intial latent state
         rng = np.random.default_rng()
         latent_state = rng.multivariate_normal(self.mu_0,self.P_0)
@@ -120,7 +124,7 @@ class Simulator():
         data, states = [observed_state], [latent_state]
 
         for time in range(num_timesteps):
-            latent_state = np.matmul(self.A,latent_state) + np.matmul(self.B,input_fnc(time,data))+ rng.multivariate_normal(np.zeros(self.x_dim),self.Q)
+            latent_state = np.matmul(self.A,latent_state) + np.matmul(self.B,inputs[time])+ rng.multivariate_normal(np.zeros(self.x_dim),self.Q)
             observed_state = np.matmul(self.C,latent_state) + rng.multivariate_normal(np.zeros(self.y_dim),self.R)
             data.append(observed_state)
             states.append(latent_state)
@@ -129,7 +133,7 @@ class Simulator():
             
         return data, states 
     
-    def generate_dataset(self,num_trials:int = 5,num_timesteps:int = 101,use_initialisation_prior:bool = True) -> np.ndarray:
+    def generate_dataset(self,inputs:np.ndarray,num_trials:int = 5,num_timesteps:int = 101,use_initialisation_prior:bool = True) -> np.ndarray:
         '''
         used to generate dataset in similar format as the neural data we are given (trial, timesteps, neuron)
         defaults to 5 trials , 101 timesteps
@@ -151,13 +155,13 @@ class Simulator():
         '''
         dataset = np.empty([num_trials,num_timesteps+1,self.y_dim])
         for i in range(0,num_trials):
-            trial_outputs, _ = self._generate_trial(self.make_pulse(0,40,10,self.input_dim), use_initialisation_prior,num_timesteps)
+            trial_outputs, _ = self._generate_trial(inputs, use_initialisation_prior,num_timesteps)
             dataset[i,:,:] = trial_outputs
         
         return dataset
 
 
-    def generate_and_show(self,num_trials:int = 5,num_timesteps:int = 101,use_initialisation_prior:bool = True):
+    def generate_and_show(self,inputs,num_trials:int = 5,num_timesteps:int = 101,use_initialisation_prior:bool = True):
         '''
         use to generate a dataset and plot it straight away
 
@@ -174,7 +178,7 @@ class Simulator():
             tells model to use the initial mean and covariance matrix to generate first data point
 
         '''
-        dataset = self.generate_dataset(num_trials,num_timesteps,use_initialisation_prior)
+        dataset = self.generate_dataset(inputs,num_trials,num_timesteps,use_initialisation_prior)
         #reshape the data to plot all trials
         outputs = dataset.reshape(-1,dataset.shape[-1]) # dataset stacked
         time = np.arange(0,len(outputs),1)
@@ -682,13 +686,84 @@ class Simulator():
             u[t_on:t_off, :] = (slope * steps)[:, None]  # broadcast across inputs
         return u
     
-    def make_pulse_array_per_channel(self, t_ons, t_offs, amplitudes, total_signal_length, num_inputs):
+    def make_pulse_array_per_channel(self, 
+                                     t_ons:np.ndarray, 
+                                     t_offs:np.ndarray, 
+                                     amplitudes:np.ndarray, 
+                                     total_signal_length:int, 
+                                     num_inputs:int,
+                                     ) ->np.ndarray:
         '''
         Use to make array of specified varied pulse inputs across channels 
+
+        parameters
+        ---------
+
+        t_ons:np.ndarray
+            array of on times for each input channel
+        t_offs:np.ndarray
+            array of off times for each input channel
+        amplitudes:np.ndarray
+            array of amplitudes for each input channel
+        total_signal_length:np.ndarray, 
+        num_inputs:int,
+
         '''
         u = np.zeros((total_signal_length, num_inputs))
         for c, (t_on, t_off, amp) in enumerate(zip(t_ons, t_offs, amplitudes)):
-            u[t_on:t_off, c] = amp
+            u[int(t_on):int(t_off), c] = amp
+        return u
+    
+    def make_prbs_array(self,
+                    amplitude: float,
+                    num_inputs: int,
+                    total_signal_length: int,
+                    bit_hold: int = 1,
+                    n_bits: int  = 8,
+                    seed: int = 0) -> np.ndarray:
+        '''
+        use to make array of independent PRBS (maximal-length LFSR) inputs,
+        one per channel -> full-rank, persistently-exciting input for ID of B.
+
+        each channel is a +/-amplitude m-sequence; channels use independent
+        LFSR seeds so they are phase-shifted copies (cross-correlation ~ -1/period).
+
+        bit_hold : timesteps each bit is held. >1 shifts excitation energy to
+                lower frequencies -- use when the dominant A-modes are slow.
+        n_bits   : LFSR register length; period = 2**n_bits - 1. if None, chosen
+                so the period covers the window without repeating.
+        '''
+        # verified maximal-length taps for THIS right-shift Fibonacci update rule
+        _PRBS_TAPS = {
+            2: (2, 1), 3: (3, 1), 4: (4, 1), 5: (5, 1, 2, 3), 6: (6, 1),
+            7: (7, 1), 8: (8, 1, 2, 3), 9: (9, 1, 2, 5), 10: (10, 1, 2, 5),
+            11: (11, 1, 2, 4), 12: (12, 1, 3, 11),
+        }
+        n_flips = int(np.ceil(total_signal_length / bit_hold))
+        if n_bits is None:
+            n_bits = max(2, int(np.ceil(np.log2(n_flips + 1))))   # period >= n_flips
+        if n_bits not in _PRBS_TAPS:
+            raise ValueError(f"no tap set for n_bits={n_bits}; supported {sorted(_PRBS_TAPS)}")
+        taps = _PRBS_TAPS[n_bits]
+        period = (1 << n_bits) - 1
+        if n_flips > period:
+            import warnings
+            warnings.warn(f"PRBS repeats: need {n_flips} bits but period is {period}; "
+                        f"raise n_bits to keep full excitation order.")
+
+        rng = np.random.default_rng(seed)
+        u = np.zeros((total_signal_length, num_inputs))
+        for ch in range(num_inputs):
+            state = int(rng.integers(1, 1 << n_bits))     # nonzero seed per channel
+            bits = np.empty(n_flips, dtype=np.int8)
+            for i in range(n_flips):
+                bits[i] = state & 1                        # output LSB
+                fb = 0
+                for t in taps:
+                    fb ^= (state >> (t - 1)) & 1           # XOR tapped bits
+                state = (state >> 1) | (fb << (n_bits - 1))
+            seq = np.repeat(bits, bit_hold)[:total_signal_length]   # bit-hold
+            u[:, ch] = amplitude * (2 * seq - 1)           # {0,1} -> {-a,+a}
         return u
 
        
