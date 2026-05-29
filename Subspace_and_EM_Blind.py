@@ -80,15 +80,24 @@ class Subspace_and_EM_Blind:
     def _initialise_from_ssid(self, key, perturb: bool):
         """Build (params, props) from the SSID seed, optionally perturbed."""
         seed = self.ssid_seed
+        # print(f"=== SEED ===")
+        # print(f"A_seed eigs (abs): {np.abs(np.linalg.eigvals(np.asarray(seed.A)))}")
+        # print(f"Q_seed eigvals:    {np.linalg.eigvalsh(0.5*(np.asarray(seed.Q)+np.asarray(seed.Q).T))}")
+        # print(f"R_seed eigvals:    {np.linalg.eigvalsh(0.5*(np.asarray(seed.R)+np.asarray(seed.R).T))}")
+        # print(f"Q_seed Frobenius:  {np.linalg.norm(seed.Q):.4f}")
         n, m, p = self.state_dim_true, self.input_dim_true, self.emission_dim
 
         # Original seed pieces (B, D start at zero since SSID didn't give them)
         A_seed = np.asarray(seed.A)                          # (n, n)
         C_seed = np.asarray(seed.C)                          # (p, n)
         B_init = np.zeros((n, m))
-        D_init = np.zeros((p, m))
-        Q_seed = 0.5 * (seed.Q + seed.Q.T) + self.psd_jitter * np.eye(n)
-        R_seed = 0.5 * (seed.R + seed.R.T) + self.psd_jitter * np.eye(p)
+      
+        
+        Q_seed = 0.5 * (np.asarray(seed.Q) + np.asarray(seed.Q).T) + self.psd_jitter * np.eye(n)
+
+        
+        y = np.asarray(self.observation)
+        R_seed = 0.1 * np.diag(y.var(axis=0))
 
         # AR(1) prior on the input
         Phi   = self.phi * np.eye(m)
@@ -97,7 +106,7 @@ class Subspace_and_EM_Blind:
         # Block matrices for the augmented LGSSM
         A_tilde = np.block([[A_seed, B_init],
                             [np.zeros((m, n)), Phi]])
-        C_tilde = np.hstack([C_seed, D_init])
+        C_tilde = np.hstack([C_seed, np.zeros((p,m))])
         Q_tilde = np.block([[Q_seed,          np.zeros((n, m))],
                             [np.zeros((m, n)), Q_u]])
         R_tilde = R_seed
@@ -122,13 +131,13 @@ class Subspace_and_EM_Blind:
         )
         return params, props
 
-    def fit(self) -> Tuple[LDSParams, float, np.ndarray]:
+    def fit(self) -> Tuple[LDSParams, float, np.ndarray,np.ndarray,np.ndarray]:
         """Run EM from the SSID seed and return (best_params, best_ll, ll_trace).
         
         
         returns
         -------
-        bestparams:LDSParams , best_ll:float,  best_llr_trace:np.ndarray
+        bestparams:LDSParams , best_ll:float,  best_llr_trace:np.ndarray, estimated latent states, estimated inputs 
         
         
         """
@@ -172,8 +181,8 @@ class Subspace_and_EM_Blind:
         posterior = self.model.smoother(best_params, emissions=emissions)
         smoothed_mean = np.asarray(posterior.smoothed_means)   # (T, n+m)
         self.x_hat = smoothed_mean[:, :self.state_dim_true]
-        self.u_hat = smoothed_mean[:, self.state_dim_true:]
-        self.fitted_augmented_params = best_params                    # recovered input
+        self.u_hat = smoothed_mean[:, self.state_dim_true:]  # recovered input
+                  
 
         # Also store the augmented params in case you want to re-smooth later
         self.fitted_augmented_params = best_params
@@ -188,12 +197,12 @@ class Subspace_and_EM_Blind:
         A_fit = A_full[:n, :n]
         B_fit = A_full[:n, n:]
         C_fit = C_full[:, :n]
-        D_fit = C_full[:, n:]
+       
         Q_fit = Q_full[:n, :n]
         R_fit = R_full
 
         # Return as your LDSParams type
-        out = LDSParams(A=A_fit, B=B_fit, C=C_fit, D=D_fit, Q=Q_fit, R=R_fit,
+        out = LDSParams(A=A_fit, B=B_fit, C=C_fit, Q=Q_fit, R=R_fit,
                         mu_0=np.zeros(n), P_0=np.eye(n))
         
 
@@ -201,4 +210,4 @@ class Subspace_and_EM_Blind:
        
 
 
-        return out, best_ll, best_llr_trace
+        return out, best_ll, best_llr_trace, self.x_hat,self.u_hat

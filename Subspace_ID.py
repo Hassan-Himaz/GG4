@@ -146,7 +146,7 @@ class Subspace_ID:
         # Placeholder B, D for LDSParams API compatibility — augmented EM will learn the real ones.
         # If LDSParams.B/D shapes depend on input_dim, pass them through from the caller instead.
         return LDSParams(
-            A=A, B=np.zeros((n, 0)), C=C, D=np.zeros((C.shape[0], 0)),
+            A=A, B=np.zeros((n, 0)), C=C,
             Q=Q, R=R,
             mu_0=np.zeros(n), P_0=np.eye(n),
         )

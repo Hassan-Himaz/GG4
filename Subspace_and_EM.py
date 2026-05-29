@@ -75,6 +75,7 @@ class Subspace_and_EM:
     def _initialise_from_ssid(self, key, perturb: bool):
         """Build (params, props) from the SSID seed, optionally perturbed."""
         seed = self.ssid_seed
+     
         n, m, p = self.state_dim, self.input_dim, self.emission_dim
         key_pert, key_init = jr.split(key)
 
@@ -92,6 +93,7 @@ class Subspace_and_EM:
         Q = 0.5 * (seed.Q + seed.Q.T) + self.psd_jitter * np.eye(n)
         R = 0.5 * (seed.R + seed.R.T) + self.psd_jitter * np.eye(p)
 
+ 
         params, props = self.model.initialize(
             key_init,
             initial_mean=jnp.zeros(n),
