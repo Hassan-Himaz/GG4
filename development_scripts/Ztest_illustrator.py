@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from Illustrator import Illustrator
+from ZIllustrator import Illustrator
 
 class TestIllustrator(unittest.TestCase):
 

@@ -2,19 +2,19 @@ from cProfile import label
 from jax import vmap
 from matplotlib import figure
 import numpy as np
-from Dynamax_EM_fitting import Dynamax_EM_Fitting
+from ZDynamax_EM_fitting import Dynamax_EM_Fitting
 from typing import Tuple,Callable
-from Subspace_and_EM_Blind import Subspace_and_EM_Blind
-from LDSParams import LDSParams
-from Illustrator import Illustrator
+from ZSubspace_and_EM_Blind import Subspace_and_EM_Blind
+from ZLDSParams import LDSParams
+from ZIllustrator import Illustrator
 import matplotlib.pyplot as plt
-from Simulator import Simulator
+from ZSimulator import Simulator
 import jax.numpy as jnp
 from pathlib import Path
 from scipy.linalg import orthogonal_procrustes
 from scipy.linalg import subspace_angles
-from Estimator_Analytics import Estimator_Analytics
-from Subspace_ID import Subspace_ID
+from ZEstimator_Analytics import Estimator_Analytics
+from ZSubspace_ID import Subspace_ID
 import math
 from tqdm import tqdm
 from itertools import product
@@ -38,10 +38,10 @@ def estimate_latent_and_input(observation: np.ndarray, LatentDim: int, InputDim:
     horizon = max(horizon, LatentDim + 2)   # safety floor
 
     #auto tuning
-    prior_hyper_parameter_dict = tune_prior(observation=observation,LatentDim=LatentDim,InputDim=InputDim)
-    best_phi = prior_hyper_parameter_dict['phi']
-    best_sigma_u_sq= prior_hyper_parameter_dict['sigma']
-    estimator = Subspace_and_EM_Blind(chosen_state_dimension=LatentDim,chosen_input_dimension=InputDim,observation=observation,horizon=horizon,phi=best_phi,sigma_u_sq=best_sigma_u_sq)
+    # prior_hyper_parameter_dict = tune_prior(observation=observation,LatentDim=LatentDim,InputDim=InputDim)
+    # best_phi = prior_hyper_parameter_dict['phi']
+    # best_sigma_u_sq= prior_hyper_parameter_dict['sigma']
+    estimator = Subspace_and_EM_Blind(chosen_state_dimension=LatentDim,chosen_input_dimension=InputDim,observation=observation,horizon=horizon,)#phi=best_phi,sigma_u_sq=best_sigma_u_sq)
     _,_,_,latent_states,inputs = estimator.fit()
 
     

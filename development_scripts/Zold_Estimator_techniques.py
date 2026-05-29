@@ -1,7 +1,7 @@
 import numpy as np
-from PEM_framework import PEM_Framework
-from Illustrator import Illustrator
-from Simulator import Simulator
+from ZPEM_framework import PEM_Framework
+from ZIllustrator import Illustrator
+from ZSimulator import Simulator
 import scipy.linalg as la
 
 

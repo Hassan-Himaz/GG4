@@ -5,7 +5,7 @@ from tqdm import tqdm
 import jax.numpy as jnp
 import jax.random as jr
 from typing import Tuple,Callable
-from LDSParams import LDSParams
+from ZLDSParams import LDSParams
 import jax
 from sklearn.decomposition import PCA
 from dynamax.parameters import ParameterProperties

@@ -7,8 +7,8 @@ from typing import Tuple
 from dynamax.linear_gaussian_ssm import LinearGaussianSSM
 from dynamax.parameters import ParameterProperties
 
-from LDSParams import LDSParams
-from Subspace_ID import Subspace_ID
+from ZLDSParams import LDSParams
+from ZSubspace_ID import Subspace_ID
 
 jax.config.update("jax_enable_x64", True)
 

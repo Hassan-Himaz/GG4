@@ -1,19 +1,19 @@
 import numpy as np
-from Dynamax_EM_fitting import Dynamax_EM_Fitting
+from ZDynamax_EM_fitting import Dynamax_EM_Fitting
 from cProfile import label
 from jax import vmap
 from matplotlib import figure
 from typing import Tuple,Callable
-from Subspace_ID import Subspace_ID
-from LDSParams import LDSParams
-from Illustrator import Illustrator
+from ZSubspace_ID import Subspace_ID
+from ZLDSParams import LDSParams
+from ZIllustrator import Illustrator
 import matplotlib.pyplot as plt
-from Simulator import Simulator
+from ZSimulator import Simulator
 import jax.numpy as jnp
 from pathlib import Path
 from scipy.linalg import orthogonal_procrustes
 from scipy.linalg import subspace_angles
-from Subspace_and_EM import Subspace_and_EM
+from ZSubspace_and_EM import Subspace_and_EM
 
 class Estimator_Analytics():
 

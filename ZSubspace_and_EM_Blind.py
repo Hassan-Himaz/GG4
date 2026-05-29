@@ -7,8 +7,8 @@ from typing import Tuple
 from dynamax.linear_gaussian_ssm import LinearGaussianSSM
 from dynamax.parameters import ParameterProperties
 
-from LDSParams import LDSParams
-from Subspace_ID import Subspace_ID
+from ZLDSParams import LDSParams
+from ZSubspace_ID import Subspace_ID
 
 jax.config.update("jax_enable_x64", True)
 
@@ -80,11 +80,11 @@ class Subspace_and_EM_Blind:
     def _initialise_from_ssid(self, key, perturb: bool):
         """Build (params, props) from the SSID seed, optionally perturbed."""
         seed = self.ssid_seed
-        # print(f"=== SEED ===")
-        # print(f"A_seed eigs (abs): {np.abs(np.linalg.eigvals(np.asarray(seed.A)))}")
-        # print(f"Q_seed eigvals:    {np.linalg.eigvalsh(0.5*(np.asarray(seed.Q)+np.asarray(seed.Q).T))}")
-        # print(f"R_seed eigvals:    {np.linalg.eigvalsh(0.5*(np.asarray(seed.R)+np.asarray(seed.R).T))}")
-        # print(f"Q_seed Frobenius:  {np.linalg.norm(seed.Q):.4f}")
+        print(f"=== SEED ===")
+        print(f"A_seed eigs (abs): {np.abs(np.linalg.eigvals(np.asarray(seed.A)))}")
+        print(f"Q_seed eigvals:    {np.linalg.eigvalsh(0.5*(np.asarray(seed.Q)+np.asarray(seed.Q).T))}")
+        print(f"R_seed eigvals:    {np.linalg.eigvalsh(0.5*(np.asarray(seed.R)+np.asarray(seed.R).T))}")
+        print(f"Q_seed Frobenius:  {np.linalg.norm(seed.Q):.4f}")
         n, m, p = self.state_dim_true, self.input_dim_true, self.emission_dim
 
         # Original seed pieces (B, D start at zero since SSID didn't give them)

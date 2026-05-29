@@ -2,15 +2,15 @@ import signal
 
 import numpy as np
 import matplotlib.pyplot as plt
-from Illustrator import Illustrator
-from Simulator import Simulator
-from Explorer import Explorer
-from Estimator_testing import estimate_latent_and_input_testing
-from PEM_framework import PEM_Framework
-from LDSParams import LDSParams
+from ZIllustrator import Illustrator
+from ZSimulator import Simulator
+from ZExplorer import Explorer
+from ZEstimator_testing import estimate_latent_and_input_testing
+from ZPEM_framework import PEM_Framework
+from ZLDSParams import LDSParams
 from typing import Callable
 from pathlib import Path
-from Dynamax_EM_fitting import Dynamax_EM_Fitting
+from ZDynamax_EM_fitting import Dynamax_EM_Fitting
 from Estimator import estimate_latent_and_input,tune_prior
 
 def testing_suite():
@@ -43,12 +43,12 @@ def testing_suite():
     #                                                   inputs= prbs_signal,
     #                                                   unseen_trial=channel_pulse_data_set[2])
     
-    estimate_latent_and_input_testing(channel_pulse_data_set[0],
-                                                      LatentDim=LATENT_DIM,
-                                                      InputDim=INPUT_DIM,
-                                                      sim=sim,
-                                                      inputs= channel_pulse_signal,
-                                                      unseen_trial=channel_pulse_data_set[2])
+    # estimate_latent_and_input_testing(channel_pulse_data_set[0],
+    #                                                   LatentDim=LATENT_DIM,
+    #                                                   InputDim=INPUT_DIM,
+    #                                                   sim=sim,
+    #                                                   inputs= channel_pulse_signal,
+    #                                                   unseen_trial=channel_pulse_data_set[2])
     
 
     # estimate_latent_and_input_testing(prbs_simulated_data_set[0],
@@ -60,11 +60,11 @@ def testing_suite():
 
 
     
-    latent_state, input_est = estimate_latent_and_input(prbs_simulated_data_set[0], 5, 2)
+    latent_state, input_est = estimate_latent_and_input(channel_pulse_data_set[0], 5, 2)
 
 
 
-    time = np.arange(prbs_simulated_data_set[0].shape[0])
+    time = np.arange(channel_pulse_data_set[0].shape[0])
 
     fig, axes = plt.subplots(3, 1, figsize=(9, 7), sharex=True)
 

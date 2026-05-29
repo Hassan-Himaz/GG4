@@ -19,7 +19,7 @@ import scipy.linalg as sla
 import test
 from tqdm import tqdm
 
-from Illustrator import Illustrator
+from ZIllustrator import Illustrator
 
 class PEM_Framework():
 

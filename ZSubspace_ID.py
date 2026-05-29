@@ -1,5 +1,5 @@
 import numpy as np
-from LDSParams import LDSParams 
+from ZLDSParams import LDSParams
 
 
 

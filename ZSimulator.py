@@ -1,9 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from Dynamax_EM_fitting import Dynamax_EM_Fitting
+from ZDynamax_EM_fitting import Dynamax_EM_Fitting
 from dynamax.linear_gaussian_ssm import ParamsLGSSM, ParamsLGSSMInitial, ParamsLGSSMDynamics, ParamsLGSSMEmissions, LinearGaussianSSM
-from Subspace_and_EM import Subspace_and_EM
-from LDSParams import LDSParams
+from ZSubspace_and_EM import Subspace_and_EM
+from ZLDSParams import LDSParams
 from typing import Any, Callable, Tuple
 import scipy.linalg as la
 from scipy.linalg import solve_discrete_lyapunov

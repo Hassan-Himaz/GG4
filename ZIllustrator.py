@@ -8,8 +8,8 @@ import scipy.linalg as la
 from scipy.signal import savgol_filter
 from statsmodels.tsa.stattools import adfuller
 from scipy.signal import spectrogram, coherence, welch
-from LDSParams import LDSParams
-from Simulator import Simulator
+from ZLDSParams import LDSParams
+from ZSimulator import Simulator
 
 
 class Illustrator:

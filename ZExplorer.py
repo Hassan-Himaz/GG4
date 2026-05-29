@@ -1,15 +1,15 @@
 from cProfile import label
 
 
-from Simulator import Simulator
-from Illustrator import Illustrator
+from ZSimulator import Simulator
+from ZIllustrator import Illustrator
 import numpy as np
 import scipy.linalg as la
 import matplotlib.pyplot as plt
 from typing import Callable
 
-from PEM_framework import PEM_Framework
-from LDSParams import LDSParams
+from ZPEM_framework import PEM_Framework
+from ZLDSParams import LDSParams
 
 
 class Explorer:
