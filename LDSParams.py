@@ -1,6 +1,8 @@
 from dataclasses import dataclass, astuple,fields
 import numpy as np
 from pathlib import Path
+from dynamax.linear_gaussian_ssm import ParamsLGSSM, ParamsLGSSMInitial, ParamsLGSSMDynamics, ParamsLGSSMEmissions
+import jax.numpy as jnp
 
 
 DEFAULT_DIR = Path.cwd() / "LDSParams_Saves"
@@ -32,9 +34,7 @@ class LDSParams:
 
     def to_dynamax(self):
         """LDSParams -> dynamax ParamsLGSSM."""
-        from dynamax.linear_gaussian_ssm import ParamsLGSSM, ParamsLGSSMInitial, \
-            ParamsLGSSMDynamics, ParamsLGSSMEmissions
-        import jax.numpy as jnp
+        
         return ParamsLGSSM(
             initial=ParamsLGSSMInitial(mean=jnp.asarray(self.mu_0),
                                        cov=jnp.asarray(self.P_0)),

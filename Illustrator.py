@@ -693,6 +693,8 @@ class Illustrator:
         principal_scores = U[:,:components_needed] @ np.diag(S[:components_needed])
         scores = principal_scores.reshape(self.trial_cnt, self.timestep_cnt, components_needed)
         return explained_variance, cumulative_variance, components_needed, principal_vectors, scores
+    
+
 
         
 
@@ -1433,16 +1435,27 @@ class Illustrator:
         plt.tight_layout()
         plt.show()
 
-    def plot_ll(self,llrs:np.ndarray)->None:
-        '''
-        use to plot a list of log likelihood ratios as it evolves per iteration
-        '''
-        steps = np.arange(0,len(llrs)-1,1)
-        plt.title('LL evolution')
-        plt.plot(steps,llrs[1:])
-        plt.xlabel('itertions')
-        plt.ylabel('Negative log likelihood')
-        plt.show
+    def plot_ll(self, llrs: np.ndarray) -> None:
+        """Plot negative log-likelihood evolution across EM iterations."""
+        steps = np.arange(len(llrs) - 1)
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+
+        ax.plot(steps, llrs[1:],
+                color='#3266ad', linewidth=2,
+                marker='o', markersize=4,
+                markerfacecolor='white', markeredgewidth=1.5)
+
+        ax.set_title('Log-likelihood convergence', fontsize=13, fontweight='medium', pad=12)
+        ax.set_xlabel('Iteration', fontsize=11)
+        ax.set_ylabel('Negative log-likelihood', fontsize=11)
+
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.grid(axis='y', linestyle='--', linewidth=0.5, alpha=0.5)
+        ax.tick_params(labelsize=10)
+
+        fig.tight_layout()
+        plt.show()
 
     def plot_predicted_vs_actual(self,
                                  y_actual: np.ndarray,
@@ -1548,8 +1561,8 @@ class Illustrator:
 
 
 
-
-    def plot_frequency_response(self, sim_sim, est_sim) -> None:
+    @staticmethod
+    def plot_frequency_response(sim_sim, est_sim) -> None:
         '''
         Compare frequency responses of true vs estimated system.
 

@@ -1,7 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from Dynamax_EM_fitting import Dynamax_EM_Fitting
-from dynamax.linear_gaussian_ssm import LinearGaussianSSM
+from dynamax.linear_gaussian_ssm import ParamsLGSSM, ParamsLGSSMInitial, ParamsLGSSMDynamics, ParamsLGSSMEmissions, LinearGaussianSSM
+from Subspace_and_EM import Subspace_and_EM
 from LDSParams import LDSParams
 from typing import Any, Callable, Tuple
 import scipy.linalg as la
@@ -88,8 +89,8 @@ class Simulator():
 
     def _generate_trial(self,
                         inputs:np.ndarray,
+                        num_timesteps:int,
                         use_initialisation_prior:bool = True,
-                        num_timesteps:int = 101,
                         ) -> tuple[np.ndarray,np.ndarray]:
         '''
         Used to generate a single trial of neural data
@@ -123,7 +124,7 @@ class Simulator():
         observed_state = np.matmul(self.C,latent_state) + rng.multivariate_normal(np.zeros(self.y_dim),self.R)
         data, states = [observed_state], [latent_state]
 
-        for time in range(num_timesteps):
+        for time in range(num_timesteps-1):
             latent_state = np.matmul(self.A,latent_state) + np.matmul(self.B,inputs[time])+ rng.multivariate_normal(np.zeros(self.x_dim),self.Q)
             observed_state = np.matmul(self.C,latent_state) + rng.multivariate_normal(np.zeros(self.y_dim),self.R)
             data.append(observed_state)
@@ -133,7 +134,9 @@ class Simulator():
             
         return data, states 
     
-    def generate_dataset(self,inputs:np.ndarray,num_trials:int = 5,num_timesteps:int = 101,use_initialisation_prior:bool = True) -> np.ndarray:
+
+    
+    def generate_dataset(self,inputs:np.ndarray,num_trials:int,num_timesteps:int,use_initialisation_prior:bool = True) -> np.ndarray:
         '''
         used to generate dataset in similar format as the neural data we are given (trial, timesteps, neuron)
         defaults to 5 trials , 101 timesteps
@@ -153,9 +156,9 @@ class Simulator():
         
         
         '''
-        dataset = np.empty([num_trials,num_timesteps+1,self.y_dim])
+        dataset = np.empty([num_trials,num_timesteps,self.y_dim])
         for i in range(0,num_trials):
-            trial_outputs, _ = self._generate_trial(inputs, use_initialisation_prior,num_timesteps)
+            trial_outputs, _ = self._generate_trial(inputs,num_timesteps, use_initialisation_prior)
             dataset[i,:,:] = trial_outputs
         
         return dataset
@@ -233,7 +236,7 @@ class Simulator():
                            est_params_dynamax, 
                            y_trial:np.ndarray, 
                            u_trial:np.ndarray, 
-                           k: int):
+                           k: int): # steps
         '''
         k-step-ahead prediction:
         Filter up to time t, then propagate k steps forward using only inputs.
@@ -256,7 +259,50 @@ class Simulator():
                 x = A @ x + B @ u[t + step]
             y_pred[t] = C @ x
         return y_pred, y_trial[k:]   # aligned
-        
+    
+
+    # get RMSE on multistep predict
+    def get_RMSE_array(self,
+                   em: Dynamax_EM_Fitting|Subspace_and_EM,
+                   est_params_dynamax: ParamsLGSSM,
+                   y_trial: np.ndarray,
+                   inputs: np.ndarray,
+                   k: np.ndarray,
+                   ) -> np.ndarray:
+
+        rmses = np.empty(len(k), dtype=float)
+        for idx, k_val in enumerate(k):
+            y_pred, y_act = Simulator.multi_step_predict(em, est_params_dynamax,
+                                                        y_trial, inputs, int(k_val))
+            rmses[idx] = np.sqrt(np.mean((y_act - y_pred) ** 2))
+        return rmses
+    
+
+    @staticmethod
+    def get_frequency_response_data(sim_sim, est_sim, num_points: int = 200):
+        '''
+        Compute magnitude (dB) of true vs estimated frequency response
+        for every input-output pair.
+
+        Returns
+        -------
+        omega   : ndarray, shape (num_points,)
+            Frequency axis (rad/sample).
+        mag_sim : ndarray, shape (num_points, y_dim, u_dim)
+            Magnitude in dB of the true system's transfer function.
+        mag_est : ndarray, shape (num_points, y_dim, u_dim)
+            Magnitude in dB of the estimated system's transfer function.
+        '''
+        if sim_sim.has_default_matrices or est_sim.has_default_matrices:
+            raise ValueError('at least one of the objects has default matrices')
+
+        omega, H_sim = sim_sim.calculate_transfer_function(num_points=num_points)
+        _,     H_est = est_sim.calculate_transfer_function(num_points=num_points)
+
+        mag_sim = 20 * np.log10(np.abs(H_sim) + 1e-12)
+        mag_est = 20 * np.log10(np.abs(H_est) + 1e-12)
+
+        return omega, mag_sim, mag_est
 
     # ------------------------------------------------------------------
     # Controllability
