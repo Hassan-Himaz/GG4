@@ -171,6 +171,8 @@ class LQR:
     def __init__(self, A, B, C, Q_cost_y, R_cost):
         """
         Initializes the LQR controller and pre-computes the optimal gain matrix.
+        Uses feedforward + feedback tracking: feedforward drives the reference
+        trajectory forward under the identified model; feedback corrects deviations.
         """
         self.A = A
         self.B = B
@@ -178,54 +180,46 @@ class LQR:
         self.n_states = A.shape[0]
         self.n_inputs = B.shape[1]
         self.n_outputs = C.shape[0]
-        
-        # 1. Transform the Y-space penalty into an X-space penalty
-        # Since MPC cost is (Cx - y_ref)^T Q (Cx - y_ref), the state penalty is C^T Q C
+
+        # Transform Y-space penalty into X-space penalty: Q_x = C^T Q_y C
         self.Q_x = self.C.T @ Q_cost_y @ self.C
         self.R = R_cost
-        
-        # 2. Solve the Discrete Algebraic Riccati Equation (DARE) once offline
+
+        # Solve DARE once offline
         P = solve_discrete_are(self.A, self.B, self.Q_x, self.R)
-        
-        # 3. Compute the optimal feedback gain matrix K
-        # K = (B^T P B + R)^-1 B^T P A
+
+        # Optimal feedback gain K: (n_inputs, n_states)
         self.K = np.linalg.inv(self.B.T @ P @ self.B + self.R) @ (self.B.T @ P @ self.A)
-        
-        # 4. Precompute the pseudo-inverse for Steady-State Reference Tracking
-        # We need to find the ideal steady-state [x_ss, u_ss] that yields y_ref.
-        # Matrix M solves: [ I - A,  -B ] [x_ss] = [   0   ]
-        #                  [   C  ,   0 ] [u_ss] = [ y_ref ]
-        M = np.block([
-            [np.eye(self.n_states) - self.A, -self.B],
-            [self.C,                         np.zeros((self.n_outputs, self.n_inputs))]
-        ])
-        
-        # We use pinv (pseudo-inverse) because m > n (16 > 2), 
-        # meaning perfect tracking of all 16 channels is impossible. 
-        # pinv automatically finds the best "least-squares" compromise.
-        self.M_pinv = np.linalg.pinv(M)
+
+        # Pseudoinverses for feedforward computation (precomputed, not per-step)
+        # C_pinv: (n_states, n_outputs) — maps y_ref → min-norm state x_ref
+        # B_pinv: (n_inputs, n_states)  — maps Δx → min-norm u_ff
+        self.C_pinv = np.linalg.pinv(C)
+        self.B_pinv = np.linalg.pinv(B)
 
     def get_input(self, x_current, target_trajectory_window):
         """
-        Calculates the fast LQR input. 
-        Signature matches MPC, but LQR only needs the immediate next target, 
-        so it ignores the rest of the window.
+        Feedforward + feedback LQR tracking.
+
+        target_trajectory_window: (T, n_outputs), T >= 1
+          index 0  — y_ref[k]:   current target (used for feedback)
+          index 1  — y_ref[k+1]: next target    (used for feedforward)
+          If T == 1, feedforward assumes the reference is constant.
         """
-        # LQR does not look ahead, so grab just the immediate target
-        y_ref = target_trajectory_window[0].reshape(-1, 1)
-        x_curr = x_current.reshape(-1, 1)
+        y_ref_k  = target_trajectory_window[0].reshape(-1)   # (n_outputs,)
+        y_ref_k1 = (target_trajectory_window[1].reshape(-1)
+                    if len(target_trajectory_window) > 1 else y_ref_k)
 
-        # 1. Find the target steady-state state and input to hit y_ref
-        target_vector = np.vstack([np.zeros((self.n_states, 1)), y_ref])
-        ss_targets = self.M_pinv @ target_vector
-        
-        x_ss = ss_targets[:self.n_states]
-        u_ss = ss_targets[self.n_states:]
+        x_curr = x_current.reshape(-1)   # (n_states,)
 
-        # 2. Apply the LQR control law: u = -K(x - x_ss) + u_ss
-        u_optimal = -self.K @ (x_curr - x_ss) + u_ss
-        
-        # 3. Enforce the hard boundaries natively handled by MPC
-        u_clipped = np.clip(u_optimal.flatten(), 0.0, 1.0)
-        
-        return u_clipped
+        # Min-norm reference states consistent with the output targets
+        x_ref_k  = self.C_pinv @ y_ref_k    # (n_states,)
+        x_ref_k1 = self.C_pinv @ y_ref_k1   # (n_states,)
+
+        # Feedforward: input that propagates the reference one step forward
+        u_ff = self.B_pinv @ (x_ref_k1 - self.A @ x_ref_k)   # (n_inputs,)
+
+        # Feedback: LQR correction for actual-vs-reference state error
+        u_fb = -self.K @ (x_curr - x_ref_k)                   # (n_inputs,)
+
+        return np.clip(u_ff + u_fb, 0.0, 1.0)
