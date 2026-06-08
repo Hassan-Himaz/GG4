@@ -38,6 +38,7 @@ class Simulator:
             observed_state = np.matmul(self.C,latent_state) + rng.multivariate_normal(np.zeros(self.y_dimensions),self.R)
             data.append(observed_state)
         return np.array(data)
+    
     def get_controllability_gramian(self) -> np.ndarray:
         """
         Calculates the discrete-time Controllability Gramian.
@@ -51,6 +52,7 @@ class Simulator:
         Solves: W_o = A^T W_o A + C^T C
         """
         return la.solve_discrete_lyapunov(self.A.T, self.C.T @ self.C)
+    
     def plot_phase_portrait(self, scale: float = 2.0):
         """
         Plots the autonomous phase portrait (vector field and eigenvectors)
@@ -240,6 +242,52 @@ class Simulator:
         
         plt.tight_layout()
         plt.show()
+        
+    def check_controllability(self) -> bool:
+        """
+        Checks if the system is controllable by ensuring the Kalman 
+        Controllability Matrix has full rank (rank == n).
+        """
+        n = self.x_dimensions
+        
+        # Initialize the controllability matrix with B
+        controllability_matrix = self.B
+        current_term = self.B
+        
+        # Horizontally stack A^k * B
+        for _ in range(1, n):
+            current_term = self.A @ current_term
+            controllability_matrix = np.hstack((controllability_matrix, current_term))
+
+        # Check the rank
+        rank = np.linalg.matrix_rank(controllability_matrix)
+        is_controllable = (rank == n)
+        
+        print(f"Controllability Matrix Rank: {rank}/{n} -> {'Controllable' if is_controllable else 'Uncontrollable'}")
+        return is_controllable
+
+    def check_observability(self) -> bool:
+        """
+        Checks if the system is observable by ensuring the Kalman 
+        Observability Matrix has full rank (rank == n).
+        """
+        n = self.x_dimensions
+        
+        # Initialize the observability matrix with C
+        observability_matrix = self.C
+        current_term = self.C
+        
+        # Vertically stack C * A^k
+        for _ in range(1, n):
+            current_term = current_term @ self.A
+            observability_matrix = np.vstack((observability_matrix, current_term))
+
+        # Check the rank
+        rank = np.linalg.matrix_rank(observability_matrix)
+        is_observable = (rank == n)
+        
+        print(f"Observability Matrix Rank: {rank}/{n} -> {'Observable' if is_observable else 'Unobservable'}")
+        return is_observable
 #Example usage
 def step_controller(time,output):
     return [1]
